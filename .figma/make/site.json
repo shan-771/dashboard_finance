@@ -1,0 +1,10 @@
+{
+  "description": "Manage and track finance enquiries efficiently with a responsive dashboard featuring lead assignment, follow-ups, status updates, and detailed activity logs.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
