@@ -1,0 +1,13 @@
+.git
+node_modules
+dist
+build
+.vite
+.env*
+**/.env*
+backend/.venv
+backend/venv
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/*.egg-info

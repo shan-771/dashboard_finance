@@ -19,6 +19,7 @@ htmlcov/
 .tox/
 .nox/
 .vite/
+.vscode/
 vite.config.*.timestamp-*
 *.tsbuildinfo
 *-debug.log*

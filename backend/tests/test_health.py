@@ -23,3 +23,14 @@ def test_database_health_reports_missing_configuration(monkeypatch) -> None:
 
     assert response.status_code == 503
     assert response.json() == {"detail": "Database is not configured"}
+
+
+def test_auth_api_reports_missing_database_configuration(monkeypatch) -> None:
+    def missing_database_configuration():
+        raise DatabaseNotConfiguredError("DATABASE_URL is not configured")
+
+    monkeypatch.setattr("app.db.get_session_factory", missing_database_configuration)
+    response = client.get("/auth/me")
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Database is not configured"}
