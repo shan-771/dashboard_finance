@@ -37,6 +37,9 @@ react(),
       proxy: {
         '/auth': { target: process.env.VITE_BACKEND_URL || 'http://127.0.0.1:8000' },
         '/users': { target: process.env.VITE_BACKEND_URL || 'http://127.0.0.1:8000' },
+        '/customers': { target: process.env.VITE_BACKEND_URL || 'http://127.0.0.1:8000' },
+        '/enquiries': { target: process.env.VITE_BACKEND_URL || 'http://127.0.0.1:8000' },
+        '/public': { target: process.env.VITE_BACKEND_URL || 'http://127.0.0.1:8000' },
       },
       watch: {
         ignored: [

@@ -45,7 +45,7 @@ alembic upgrade head
 python -m app.cli create-manager
 ```
 
-For local UI demonstrations, the development-only demo command creates one Manager and one Staff account:
+For local UI testing, the development-only demo command creates one Manager and one Staff account:
 
 ```powershell
 python -m app.cli create-demo-accounts
@@ -74,6 +74,20 @@ The local development environment uses HTTP-only, SameSite=Lax cookies without t
 - `GET /users` — Manager-only staff directory.
 - `POST /users` — Manager-only Staff account creation. Send the CSRF token in the `X-CSRF-Token` header.
 - `PATCH /users/{id}/status` — Manager-only Staff activation/deactivation. Deactivation revokes that Staff member's sessions.
+
+## Customer and enquiry APIs (Phase 3)
+
+All staff dashboard endpoints require an authenticated session. Mutating dashboard requests also require the `X-CSRF-Token` returned by `/auth/login` or `/auth/me`.
+
+- `GET /customers?limit=50&offset=0` — list active customer records; merged source records remain stored but are hidden from this directory.
+- `GET /enquiries?status=New&service_type=Real%20Estate&source=Phone&search=...&limit=50&offset=0` — paginated enquiry list with optional filters.
+- `POST /enquiries` — create an enquiry with either a new `customer` object (`name`, `phone`, optional `email`) or an existing `customer_id`, plus `service_type` and `source`.
+- `PATCH /enquiries/{id}/status` — update status within the allowed lifecycle and optionally record an outcome reason or do-not-contact instruction for Lost enquiries.
+- `PATCH /enquiries/{id}/handler` — any authenticated staff member can set or clear the informational handler; the selected user must be an active Staff account and this does not restrict enquiry access.
+- `POST /customers/{target_id}/link` — explicitly link a source customer record to a target. Its enquiries move to the target; the source record is retained with a link to the target.
+- `POST /public/enquiries` — public website intake. Accepts `customer` contact details and `service_type`; source is set to `Website`, status starts as `New`, and the response does not reveal customer data.
+
+Website intake creates a separate customer record without trying to infer identity from name, email, or phone. Staff can explicitly link that record to an existing customer after review. The initial public intake throttle is in-memory and per application process; production deployments with multiple workers should add a shared rate-limit store or edge rate limiting.
 
 The client-facing roles are `manager` and `staff`. A Manager provisions Staff accounts; there is no public registration endpoint. Developer database access and schema changes are not exposed through the client API.
 

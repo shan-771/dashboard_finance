@@ -1,7 +1,8 @@
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, SecretStr, field_validator
+from datetime import datetime
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, SecretStr, field_validator, model_validator
 from uuid import UUID
 
-from app.models import UserRole
+from app.models import EnquiryStatus, UserRole
 
 
 class LoginRequest(BaseModel):
@@ -76,3 +77,107 @@ class UserResponse(BaseModel):
 class AuthResponse(BaseModel):
     user: UserResponse
     csrf_token: str
+
+
+class CustomerInput(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    phone: str = Field(min_length=3, max_length=40)
+    email: EmailStr | None = None
+
+    @field_validator("name", "phone")
+    @classmethod
+    def trim_required_text(cls, value: str) -> str:
+        value = value.strip()
+        if len(value) < 2:
+            raise ValueError("This field must contain at least 2 characters")
+        return value
+
+    @field_validator("email")
+    @classmethod
+    def normalize_optional_email(cls, value: EmailStr | None) -> str | None:
+        return str(value).strip().lower() if value is not None else None
+
+
+class CreateEnquiryRequest(BaseModel):
+    customer_id: UUID | None = None
+    customer: CustomerInput | None = None
+    service_type: str = Field(min_length=2, max_length=80)
+    source: str = Field(min_length=2, max_length=40)
+
+    @field_validator("service_type", "source")
+    @classmethod
+    def trim_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("This field cannot be blank")
+        return value
+
+    @model_validator(mode="after")
+    def require_customer(self):
+        if (self.customer_id is None) == (self.customer is None):
+            raise ValueError("Provide either customer_id or customer details")
+        return self
+
+
+class CreatePublicEnquiryRequest(BaseModel):
+    customer: CustomerInput
+    service_type: str = Field(min_length=2, max_length=80)
+
+    @field_validator("service_type")
+    @classmethod
+    def trim_service_type(cls, value: str) -> str:
+        return value.strip()
+
+
+class MergeCustomerRequest(BaseModel):
+    source_customer_id: UUID
+
+
+class PublicEnquiryAccepted(BaseModel):
+    accepted: bool = True
+
+
+class UpdateEnquiryStatusRequest(BaseModel):
+    status: EnquiryStatus
+    outcome_reason: str | None = Field(default=None, max_length=2000)
+    do_not_contact: bool = False
+
+    @field_validator("outcome_reason")
+    @classmethod
+    def trim_outcome_reason(cls, value: str | None) -> str | None:
+        return value.strip() or None if value is not None else None
+
+
+class UpdateEnquiryHandlerRequest(BaseModel):
+    handled_by_id: UUID | None
+
+
+class CustomerResponse(BaseModel):
+    id: UUID
+    name: str
+    phone: str
+    email: EmailStr | None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class EnquiryResponse(BaseModel):
+    id: UUID
+    customer: CustomerResponse
+    service_type: str
+    source: str
+    status: EnquiryStatus
+    handled_by_id: UUID | None
+    handled_by_name: str | None
+    outcome_reason: str | None
+    do_not_contact: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class EnquiryPage(BaseModel):
+    items: list[EnquiryResponse]
+    total: int
+    limit: int
+    offset: int
