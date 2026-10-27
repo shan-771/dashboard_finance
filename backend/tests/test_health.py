@@ -1,5 +1,7 @@
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
 
+from app.core.config import get_settings
 from app.db import DatabaseNotConfiguredError
 from app.main import app
 
@@ -23,6 +25,22 @@ def test_database_health_reports_missing_configuration(monkeypatch) -> None:
 
     assert response.status_code == 503
     assert response.json() == {"detail": "Database is not configured"}
+
+
+def test_database_health_reports_connection_and_business_timezone(monkeypatch) -> None:
+    engine = create_engine("sqlite://")
+    monkeypatch.setattr("app.api.health.get_engine", lambda: engine)
+    try:
+        response = client.get("/health/database")
+    finally:
+        engine.dispose()
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ok",
+        "database": "ok",
+        "business_timezone": get_settings().business_timezone,
+    }
 
 
 def test_auth_api_reports_missing_database_configuration(monkeypatch) -> None:

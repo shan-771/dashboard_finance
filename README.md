@@ -9,12 +9,12 @@ MI FINS is a real estate and finance CRM. The repository currently contains a Vi
 | Backend foundation | Implemented | FastAPI app, environment settings, PostgreSQL connection, Alembic migrations, health endpoints |
 | Authentication and staff roles | Implemented | Manager and Staff accounts, password hashing, cookie sessions, CSRF protection, Manager-only staff administration |
 | Customers and enquiries | Implemented and tested | Unified enquiry records, website intake, lifecycle validation, handler visibility, filtering, pagination, explicit customer linking |
-| Follow-ups | Planned: Phase 4 | Completed follow-up dates, next scheduled dates, and due/upcoming/overdue views |
+| Follow-ups | Implemented: Phase 4 | Completed follow-up history, next scheduled dates, and due-today/upcoming/overdue views |
 | Edit/deletion approvals | Planned: Phase 5 | Staff requests and Manager decisions |
 | Property management | Planned: Phase 6 | Fields and photo storage remain to be agreed |
-| Dashboard CRM integration and reporting | Planned: Phase 7 | The current enquiry and customer screens are not yet connected to the CRM APIs |
+| Dashboard CRM integration and reporting | In progress | New-enquiry actions, enquiry listing, follow-up actions, calendar view, and connection status are wired to the CRM APIs; other CRM views remain to be integrated |
 
-The backend CRM APIs are available now, but the dashboard still contains placeholder CRM views. Use the API documentation at `http://localhost:8000/docs` to explore or call the backend directly. The development login and demo accounts remain available for testing.
+The dashboard now creates and lists enquiries, records and reschedules follow-ups, and shows a calendar view. Its connection indicator calls the database health endpoint and displays the backend's configured business timezone. Other dashboard CRM views remain in progress. Use the API documentation at `http://localhost:8000/docs` to explore or call the backend directly. The development login and demo accounts remain available for testing.
 
 ## Start the full development stack
 
@@ -69,6 +69,8 @@ One customer can have multiple independent enquiries. Service type and source ar
 The initial service types are `Real Estate` and `Finance/Loans`. Sources include `Website`, `Phone`, `Referral`, and `Walk-in`, with other source values allowed. Enquiry statuses are `New`, `Attended`, `Follow-ups`, `Closed`, `Open`, and `Lost`. Follow-up counts are not required before choosing a final outcome; a do-not-contact request is recorded on a Lost enquiry and cannot be cleared through the status API.
 
 The initial public intake rate limiter is in memory and per API process. Production deployments with multiple workers need a shared or edge rate limiter. Email OTP is not implemented. The distinction between Administrator and Manager privileges remains undecided; current account-management endpoints are Manager-only.
+
+Follow-ups are recorded per enquiry. `POST /enquiries/{id}/follow-ups` records a completed follow-up and clears its current reminder, `GET /enquiries/{id}/follow-ups` lists its completed history, `PUT /enquiries/{id}/follow-up` sets or clears a timezone-aware next date, and `GET /follow-ups?bucket=due-today|upcoming|overdue` returns actionable enquiries. “Due today” uses the configured `BUSINESS_TIMEZONE` (default `Asia/Kolkata`). Final outcomes clear scheduled dates, and do-not-contact enquiries cannot be scheduled or logged for further contact; completed history remains available.
 
 ## Authentication and configuration
 

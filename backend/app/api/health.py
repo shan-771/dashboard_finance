@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.core.config import get_settings
 from app.db import DatabaseNotConfiguredError, get_engine
 
 
@@ -24,4 +25,8 @@ def read_database_health() -> dict[str, str]:
     except SQLAlchemyError as exc:
         raise HTTPException(status_code=503, detail="Database is unavailable") from exc
 
-    return {"status": "ok", "database": "ok"}
+    return {
+        "status": "ok",
+        "database": "ok",
+        "business_timezone": get_settings().business_timezone,
+    }

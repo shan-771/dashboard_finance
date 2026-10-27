@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, SecretStr, field_validator, model_validator
 from uuid import UUID
 
@@ -152,6 +152,28 @@ class UpdateEnquiryHandlerRequest(BaseModel):
     handled_by_id: UUID | None
 
 
+class ScheduleFollowUpRequest(BaseModel):
+    next_follow_up_at: datetime | None
+
+    @field_validator("next_follow_up_at")
+    @classmethod
+    def require_timezone(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            raise ValueError("Follow-up date and time must include a timezone")
+        return value.astimezone(timezone.utc) if value is not None else None
+
+
+class CompleteFollowUpRequest(BaseModel):
+    completed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @field_validator("completed_at")
+    @classmethod
+    def require_timezone(cls, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            raise ValueError("Completed date and time must include a timezone")
+        return value.astimezone(timezone.utc)
+
+
 class CustomerResponse(BaseModel):
     id: UUID
     name: str
@@ -172,8 +194,42 @@ class EnquiryResponse(BaseModel):
     handled_by_name: str | None
     outcome_reason: str | None
     do_not_contact: bool
+    next_follow_up_at: datetime | None
+    completed_follow_up_count: int
     created_at: datetime
     updated_at: datetime
+
+
+class FollowUpResponse(BaseModel):
+    id: UUID
+    enquiry_id: UUID
+    completed_at: datetime
+    created_by_user_id: UUID | None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("completed_at", "created_at", mode="before")
+    @classmethod
+    def ensure_utc_response_timezone(cls, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+
+class FollowUpPage(BaseModel):
+    bucket: str
+    items: list[EnquiryResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class FollowUpHistoryPage(BaseModel):
+    items: list[FollowUpResponse]
+    total: int
+    limit: int
+    offset: int
 
 
 class EnquiryPage(BaseModel):

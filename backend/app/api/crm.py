@@ -1,24 +1,32 @@
 from collections import deque
+from datetime import datetime, time, timedelta, timezone
 from threading import Lock
 from time import monotonic
 from typing import Annotated
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.db import get_db
+from app.core.config import get_settings
 from app.dependencies import AuthenticatedSession, get_current_auth, require_csrf
-from app.models import Customer, Enquiry, EnquiryStatus, User, UserRole
+from app.models import Customer, Enquiry, EnquiryStatus, FollowUp, User, UserRole
 from app.schemas import (
+    CompleteFollowUpRequest,
     CreateEnquiryRequest,
     CreatePublicEnquiryRequest,
     CustomerResponse,
     EnquiryPage,
     EnquiryResponse,
+    FollowUpPage,
+    FollowUpHistoryPage,
+    FollowUpResponse,
     MergeCustomerRequest,
     PublicEnquiryAccepted,
+    ScheduleFollowUpRequest,
     UpdateEnquiryHandlerRequest,
     UpdateEnquiryStatusRequest,
 )
@@ -26,6 +34,7 @@ from app.schemas import (
 
 router = APIRouter(tags=["customers and enquiries"])
 FINAL_STATUSES = {EnquiryStatus.CLOSED, EnquiryStatus.OPEN, EnquiryStatus.LOST}
+ACTIVE_STATUSES = {EnquiryStatus.NEW.value, EnquiryStatus.ATTENDED.value, EnquiryStatus.FOLLOW_UPS.value}
 ALLOWED_TRANSITIONS = {
     EnquiryStatus.NEW: {EnquiryStatus.ATTENDED, *FINAL_STATUSES},
     EnquiryStatus.ATTENDED: {EnquiryStatus.FOLLOW_UPS, *FINAL_STATUSES},
@@ -37,7 +46,10 @@ _public_requests: dict[str, deque[float]] = {}
 _public_request_lock = Lock()
 
 
-def enquiry_response(enquiry: Enquiry) -> EnquiryResponse:
+def enquiry_response(enquiry: Enquiry, completed_follow_up_count: int = 0) -> EnquiryResponse:
+    next_follow_up_at = enquiry.next_follow_up_at
+    if next_follow_up_at is not None and next_follow_up_at.tzinfo is None:
+        next_follow_up_at = next_follow_up_at.replace(tzinfo=timezone.utc)
     return EnquiryResponse(
         id=enquiry.id,
         customer=CustomerResponse.model_validate(enquiry.customer),
@@ -48,9 +60,27 @@ def enquiry_response(enquiry: Enquiry) -> EnquiryResponse:
         handled_by_name=enquiry.handled_by.display_name if enquiry.handled_by else None,
         outcome_reason=enquiry.outcome_reason,
         do_not_contact=enquiry.do_not_contact,
+        next_follow_up_at=next_follow_up_at,
+        completed_follow_up_count=completed_follow_up_count,
         created_at=enquiry.created_at,
         updated_at=enquiry.updated_at,
     )
+
+
+def completed_follow_up_counts(db: Session, enquiry_ids: list[UUID]) -> dict[UUID, int]:
+    if not enquiry_ids:
+        return {}
+    rows = db.execute(
+        select(FollowUp.enquiry_id, func.count(FollowUp.id))
+        .where(FollowUp.enquiry_id.in_(enquiry_ids))
+        .group_by(FollowUp.enquiry_id)
+    ).all()
+    return {enquiry_id: count for enquiry_id, count in rows}
+
+
+def require_actionable_enquiry(enquiry: Enquiry) -> None:
+    if enquiry.status not in ACTIVE_STATUSES or enquiry.do_not_contact:
+        raise HTTPException(status_code=409, detail="Follow-ups are unavailable for finalized or do-not-contact enquiries")
 
 
 @router.get("/customers", response_model=list[CustomerResponse])
@@ -160,7 +190,13 @@ def list_enquiries(
     stmt = select(Enquiry).options(joinedload(Enquiry.customer), joinedload(Enquiry.handled_by)).where(*conditions)
     total = db.scalar(select(func.count()).select_from(Enquiry).where(*conditions)) or 0
     rows = db.scalars(stmt.order_by(Enquiry.created_at.desc()).limit(limit).offset(offset)).unique().all()
-    return EnquiryPage(items=[enquiry_response(item) for item in rows], total=total, limit=limit, offset=offset)
+    counts = completed_follow_up_counts(db, [item.id for item in rows])
+    return EnquiryPage(
+        items=[enquiry_response(item, counts.get(item.id, 0)) for item in rows],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.post(
@@ -229,9 +265,118 @@ def update_enquiry_status(
     enquiry.status = payload.status.value
     enquiry.outcome_reason = payload.outcome_reason
     enquiry.do_not_contact = payload.do_not_contact
+    if payload.status in FINAL_STATUSES:
+        enquiry.next_follow_up_at = None
     db.commit()
     db.refresh(enquiry)
-    return enquiry_response(enquiry)
+    count = db.scalar(select(func.count(FollowUp.id)).where(FollowUp.enquiry_id == enquiry.id)) or 0
+    return enquiry_response(enquiry, count)
+
+
+@router.put(
+    "/enquiries/{enquiry_id}/follow-up",
+    response_model=EnquiryResponse,
+    dependencies=[Depends(require_csrf)],
+)
+def schedule_enquiry_follow_up(
+    enquiry_id: UUID,
+    payload: ScheduleFollowUpRequest,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[AuthenticatedSession, Depends(get_current_auth)],
+) -> EnquiryResponse:
+    enquiry = db.scalar(
+        select(Enquiry).options(joinedload(Enquiry.customer), joinedload(Enquiry.handled_by))
+        .where(Enquiry.id == enquiry_id)
+    )
+    if enquiry is None:
+        raise HTTPException(status_code=404, detail="Enquiry not found")
+    require_actionable_enquiry(enquiry)
+    enquiry.next_follow_up_at = payload.next_follow_up_at
+    db.commit()
+    db.refresh(enquiry)
+    count = db.scalar(select(func.count(FollowUp.id)).where(FollowUp.enquiry_id == enquiry.id)) or 0
+    return enquiry_response(enquiry, count)
+
+
+@router.post(
+    "/enquiries/{enquiry_id}/follow-ups",
+    response_model=FollowUpResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_csrf)],
+)
+def record_completed_follow_up(
+    enquiry_id: UUID,
+    payload: CompleteFollowUpRequest,
+    db: Annotated[Session, Depends(get_db)],
+    auth: Annotated[AuthenticatedSession, Depends(get_current_auth)],
+) -> FollowUp:
+    enquiry = db.get(Enquiry, enquiry_id)
+    if enquiry is None:
+        raise HTTPException(status_code=404, detail="Enquiry not found")
+    require_actionable_enquiry(enquiry)
+    follow_up = FollowUp(
+        enquiry_id=enquiry.id,
+        completed_at=payload.completed_at,
+        created_by_user_id=auth.user.id,
+    )
+    db.add(follow_up)
+    # Completing the scheduled contact clears its current reminder; staff can schedule the next one afterward.
+    enquiry.next_follow_up_at = None
+    db.commit()
+    db.refresh(follow_up)
+    return follow_up
+
+
+@router.get("/enquiries/{enquiry_id}/follow-ups", response_model=FollowUpHistoryPage)
+def list_completed_follow_ups(
+    enquiry_id: UUID,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[AuthenticatedSession, Depends(get_current_auth)],
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> FollowUpHistoryPage:
+    if db.get(Enquiry, enquiry_id) is None:
+        raise HTTPException(status_code=404, detail="Enquiry not found")
+    base = select(FollowUp).where(FollowUp.enquiry_id == enquiry_id)
+    total = db.scalar(select(func.count()).select_from(FollowUp).where(FollowUp.enquiry_id == enquiry_id)) or 0
+    items = db.scalars(base.order_by(FollowUp.completed_at.desc()).limit(limit).offset(offset)).all()
+    return FollowUpHistoryPage(items=items, total=total, limit=limit, offset=offset)
+
+
+@router.get("/follow-ups", response_model=FollowUpPage)
+def list_actionable_follow_ups(
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[AuthenticatedSession, Depends(get_current_auth)],
+    bucket: str = Query(pattern="^(due-today|upcoming|overdue)$"),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> FollowUpPage:
+    zone = ZoneInfo(get_settings().business_timezone)
+    now = datetime.now(zone)
+    today_start = datetime.combine(now.date(), time.min, tzinfo=zone).astimezone(timezone.utc)
+    tomorrow_start = datetime.combine(now.date() + timedelta(days=1), time.min, tzinfo=zone).astimezone(timezone.utc)
+    conditions = [
+        Enquiry.status.in_(ACTIVE_STATUSES),
+        Enquiry.do_not_contact.is_(False),
+        Enquiry.next_follow_up_at.is_not(None),
+    ]
+    if bucket == "due-today":
+        conditions.extend((Enquiry.next_follow_up_at >= today_start, Enquiry.next_follow_up_at < tomorrow_start))
+    elif bucket == "upcoming":
+        conditions.append(Enquiry.next_follow_up_at >= tomorrow_start)
+    else:
+        conditions.append(Enquiry.next_follow_up_at < today_start)
+    stmt = select(Enquiry).options(joinedload(Enquiry.customer), joinedload(Enquiry.handled_by)).where(*conditions)
+    total = db.scalar(select(func.count()).select_from(Enquiry).where(*conditions)) or 0
+    rows = db.scalars(stmt.order_by(Enquiry.next_follow_up_at.asc()).limit(limit).offset(offset)).unique().all()
+    counts = completed_follow_up_counts(db, [item.id for item in rows])
+    return FollowUpPage(
+        bucket=bucket,
+        items=[enquiry_response(item, counts.get(item.id, 0)) for item in rows],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.patch(
@@ -261,4 +406,5 @@ def update_enquiry_handler(
         enquiry.handled_by = handler
     db.commit()
     db.refresh(enquiry)
-    return enquiry_response(enquiry)
+    count = db.scalar(select(func.count(FollowUp.id)).where(FollowUp.enquiry_id == enquiry.id)) or 0
+    return enquiry_response(enquiry, count)

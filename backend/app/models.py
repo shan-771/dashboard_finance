@@ -100,8 +100,27 @@ class Enquiry(Base):
     handled_by_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     outcome_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     do_not_contact: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    next_follow_up_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
 
     customer: Mapped[Customer] = relationship(back_populates="enquiries")
     handled_by: Mapped[User | None] = relationship(foreign_keys=[handled_by_id])
+    follow_ups: Mapped[list["FollowUp"]] = relationship(back_populates="enquiry", order_by="FollowUp.completed_at")
+
+
+class FollowUp(Base):
+    __tablename__ = "follow_ups"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    enquiry_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("enquiries.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    created_by_user_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+    enquiry: Mapped[Enquiry] = relationship(back_populates="follow_ups")
+    created_by: Mapped[User | None] = relationship()

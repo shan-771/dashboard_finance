@@ -1,3 +1,6 @@
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
 from fastapi.testclient import TestClient
 from app.models import UserRole
 
@@ -152,6 +155,94 @@ def test_new_enquiry_can_be_marked_open_without_followups(client: TestClient, ma
     assert response.status_code == 200
     assert response.json()["status"] == "Open"
     assert response.json()["outcome_reason"] == "May contact about future offers"
+
+
+def test_completed_follow_ups_and_actionable_date_buckets(client: TestClient, make_user) -> None:
+    user = make_user()
+    csrf = sign_in(client, user.user_id)
+    headers = {"X-CSRF-Token": csrf}
+    zone = ZoneInfo("Asia/Kolkata")
+    now = datetime.now(zone)
+    today = now.date()
+    start_today = datetime.combine(today, datetime.min.time(), tzinfo=zone)
+
+    enquiries = {}
+    for name, scheduled in (
+        ("Due Today", start_today + timedelta(hours=12)),
+        ("Upcoming", start_today + timedelta(days=2, hours=12)),
+        ("Overdue", start_today - timedelta(hours=12)),
+    ):
+        created = client.post("/enquiries", headers=headers, json=new_enquiry_payload(name)).json()
+        enquiries[name] = created
+        scheduled_response = client.put(
+            f"/enquiries/{created['id']}/follow-up",
+            headers=headers,
+            json={"next_follow_up_at": scheduled.isoformat()},
+        )
+        assert scheduled_response.status_code == 200
+        assert scheduled_response.json()["completed_follow_up_count"] == 0
+
+    completed = client.post(
+        f"/enquiries/{enquiries['Due Today']['id']}/follow-ups",
+        headers=headers,
+        json={},
+    )
+    assert completed.status_code == 201
+    assert completed.json()["created_by_user_id"] == str(user.id)
+    history = client.get(f"/enquiries/{enquiries['Due Today']['id']}/follow-ups")
+    assert history.status_code == 200
+    assert history.json()["total"] == 1
+    assert history.json()["items"][0]["id"] == completed.json()["id"]
+    listed = client.get("/enquiries").json()["items"]
+    due_record = next(row for row in listed if row["id"] == enquiries["Due Today"]["id"])
+    assert due_record["completed_follow_up_count"] == 1
+    assert due_record["next_follow_up_at"] is None
+
+    for bucket, expected_name in (("upcoming", "Upcoming"), ("overdue", "Overdue")):
+        response = client.get(f"/follow-ups?bucket={bucket}")
+        assert response.status_code == 200
+        assert response.json()["total"] == 1
+        assert response.json()["items"][0]["customer"]["name"] == expected_name
+    assert client.get("/follow-ups?bucket=due-today").json()["total"] == 0
+
+
+def test_finalizing_enquiry_clears_schedule_and_blocks_future_follow_ups(client: TestClient, make_user) -> None:
+    user = make_user()
+    csrf = sign_in(client, user.user_id)
+    headers = {"X-CSRF-Token": csrf}
+    enquiry = client.post("/enquiries", headers=headers, json=new_enquiry_payload()).json()
+    scheduled = client.put(
+        f"/enquiries/{enquiry['id']}/follow-up",
+        headers=headers,
+        json={"next_follow_up_at": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()},
+    )
+    assert scheduled.status_code == 200
+    closed = client.patch(
+        f"/enquiries/{enquiry['id']}/status", headers=headers, json={"status": "Closed"}
+    )
+    assert closed.status_code == 200
+    assert closed.json()["next_follow_up_at"] is None
+    assert client.post(f"/enquiries/{enquiry['id']}/follow-ups", headers=headers, json={}).status_code == 409
+    assert client.get(f"/enquiries/{enquiry['id']}/follow-ups").json()["total"] == 0
+    assert client.put(
+        f"/enquiries/{enquiry['id']}/follow-up",
+        headers=headers,
+        json={"next_follow_up_at": None},
+    ).status_code == 409
+
+
+def test_follow_up_requires_timezone_and_authentication(client: TestClient, make_user) -> None:
+    assert client.get("/follow-ups?bucket=due-today").status_code == 401
+    user = make_user()
+    csrf = sign_in(client, user.user_id)
+    headers = {"X-CSRF-Token": csrf}
+    enquiry = client.post("/enquiries", headers=headers, json=new_enquiry_payload()).json()
+    response = client.put(
+        f"/enquiries/{enquiry['id']}/follow-up",
+        headers=headers,
+        json={"next_follow_up_at": "2026-10-28T12:00:00"},
+    )
+    assert response.status_code == 422
 
 
 def test_invalid_enquiry_values_and_missing_customer_are_rejected(client: TestClient, make_user) -> None:

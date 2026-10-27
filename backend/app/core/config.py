@@ -1,5 +1,6 @@
 from functools import lru_cache
 from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -11,6 +12,7 @@ class Settings(BaseSettings):
     database_url: SecretStr | None = None
     session_cookie_name: str = "mi_fins_session"
     session_ttl_hours: int = Field(default=12, ge=1, le=168)
+    business_timezone: str = "Asia/Kolkata"
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -29,6 +31,15 @@ class Settings(BaseSettings):
             ("postgresql://", "postgresql+psycopg://")
         ):
             raise ValueError("DATABASE_URL must use PostgreSQL with the psycopg driver")
+        return value
+
+    @field_validator("business_timezone")
+    @classmethod
+    def validate_business_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError("BUSINESS_TIMEZONE must be a valid IANA timezone") from exc
         return value
 
     @property

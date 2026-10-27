@@ -20,6 +20,32 @@ export type CreateStaffPayload = {
   password: string;
 };
 
+export type ApiEnquiry = {
+  id: string;
+  customer: { id: string; name: string; phone: string; email: string | null; created_at: string };
+  service_type: string;
+  source: string;
+  status: "New" | "Attended" | "Follow-ups" | "Closed" | "Open" | "Lost";
+  handled_by_id: string | null;
+  handled_by_name: string | null;
+  outcome_reason: string | null;
+  do_not_contact: boolean;
+  next_follow_up_at: string | null;
+  completed_follow_up_count: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ApiPage<T> = { items: T[]; total: number; limit: number; offset: number };
+export type FollowUpBucket = "due-today" | "upcoming" | "overdue";
+export type DatabaseHealth = { status: string; database: string; business_timezone: string };
+
+export type CreateEnquiryPayload = {
+  customer: { name: string; phone: string; email?: string };
+  service_type: string;
+  source: string;
+};
+
 export class ApiError extends Error {
   status: number;
 
@@ -62,6 +88,20 @@ export const api = {
     request<ApiUser>(
       `/users/${encodeURIComponent(id)}/status`,
       { method: "PATCH", body: JSON.stringify({ is_active }) },
+      csrfToken,
+    ),
+  listEnquiries: () => request<ApiPage<ApiEnquiry>>("/enquiries?limit=100&offset=0"),
+  createEnquiry: (payload: CreateEnquiryPayload, csrfToken: string) =>
+    request<ApiEnquiry>("/enquiries", { method: "POST", body: JSON.stringify(payload) }, csrfToken),
+  databaseHealth: () => request<DatabaseHealth>("/health/database"),
+  listFollowUps: (bucket: FollowUpBucket) =>
+    request<ApiPage<ApiEnquiry> & { bucket: FollowUpBucket }>(`/follow-ups?bucket=${bucket}&limit=100&offset=0`),
+  completeFollowUp: (enquiryId: string, csrfToken: string) =>
+    request<{ id: string }>(`/enquiries/${encodeURIComponent(enquiryId)}/follow-ups`, { method: "POST", body: JSON.stringify({}) }, csrfToken),
+  scheduleFollowUp: (enquiryId: string, nextFollowUpAt: string | null, csrfToken: string) =>
+    request<ApiEnquiry>(
+      `/enquiries/${encodeURIComponent(enquiryId)}/follow-up`,
+      { method: "PUT", body: JSON.stringify({ next_follow_up_at: nextFollowUpAt }) },
       csrfToken,
     ),
 };

@@ -87,6 +87,15 @@ All staff dashboard endpoints require an authenticated session. Mutating dashboa
 - `POST /customers/{target_id}/link` — explicitly link a source customer record to a target. Its enquiries move to the target; the source record is retained with a link to the target.
 - `POST /public/enquiries` — public website intake. Accepts `customer` contact details and `service_type`; source is set to `Website`, status starts as `New`, and the response does not reveal customer data.
 
+## Follow-up API (Phase 4)
+
+- `POST /enquiries/{id}/follow-ups` records a completed follow-up date/time. Omit `completed_at` to use the current UTC time, or supply an ISO datetime with a timezone.
+- `GET /enquiries/{id}/follow-ups` returns that enquiry's paginated completed history.
+- `PUT /enquiries/{id}/follow-up` sets or clears `next_follow_up_at` with an ISO datetime including its timezone (or `null` to clear it).
+- `GET /follow-ups?bucket=due-today|upcoming|overdue&limit=50&offset=0` returns paginated actionable enquiries. “Due today” uses `BUSINESS_TIMEZONE`, which defaults to `Asia/Kolkata`.
+
+These routes require a staff session; writes also require the CSRF header. Completed follow-up counts are included on enquiry responses. Recording a completed contact clears its current scheduled reminder; staff can then schedule the next contact. Finalized enquiries also lose scheduled dates, while completed history is retained. Follow-ups cannot be scheduled or recorded after a final outcome or a do-not-contact instruction.
+
 Website intake creates a separate customer record without trying to infer identity from name, email, or phone. Staff can explicitly link that record to an existing customer after review. The initial public intake throttle is in-memory and per application process; production deployments with multiple workers should add a shared rate-limit store or edge rate limiting.
 
 The client-facing roles are `manager` and `staff`. A Manager provisions Staff accounts; there is no public registration endpoint. Developer database access and schema changes are not exposed through the client API.

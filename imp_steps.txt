@@ -1,0 +1,4 @@
+data base pe notification system lagana h so that one user is assigned to only one staff member and if its assigned and other staff tries to 
+take that lead it shows a notification that it is taken 
+but have to rate limit the database also 
+
