@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, String, Text, UniqueConstraint, Uuid
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, JSON, String, Text, UniqueConstraint, Uuid
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -22,6 +22,14 @@ class EnquiryStatus(StrEnum):
     CLOSED = "Closed"
     OPEN = "Open"
     LOST = "Lost"
+
+
+class ChangeRequestStatus(StrEnum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    STALE = "stale"
+    COMPLETED = "completed"
 
 
 class Base(DeclarativeBase):
@@ -103,6 +111,7 @@ class Enquiry(Base):
     next_follow_up_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
     customer: Mapped[Customer] = relationship(back_populates="enquiries")
     handled_by: Mapped[User | None] = relationship(foreign_keys=[handled_by_id])
@@ -124,3 +133,58 @@ class FollowUp(Base):
 
     enquiry: Mapped[Enquiry] = relationship(back_populates="follow_ups")
     created_by: Mapped[User | None] = relationship()
+
+
+class EnquiryChangeRequest(Base):
+    __tablename__ = "enquiry_change_requests"
+    __table_args__ = (
+        CheckConstraint("request_type IN ('edit', 'delete')", name="ck_change_requests_type"),
+        CheckConstraint("status IN ('pending', 'approved', 'rejected', 'stale', 'completed')", name="ck_change_requests_status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    enquiry_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("enquiries.id", ondelete="RESTRICT"), nullable=False, index=True)
+    request_type: Mapped[str] = mapped_column(String(12), nullable=False)
+    status: Mapped[str] = mapped_column(String(12), default=ChangeRequestStatus.PENDING.value, nullable=False, index=True)
+    proposed_changes: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    original_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
+    base_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    submitted_by_user_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    decided_by_user_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    confirmed_by_user_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    enquiry: Mapped[Enquiry] = relationship()
+    submitted_by: Mapped[User | None] = relationship(foreign_keys=[submitted_by_user_id])
+    decided_by: Mapped[User | None] = relationship(foreign_keys=[decided_by_user_id])
+    confirmed_by: Mapped[User | None] = relationship(foreign_keys=[confirmed_by_user_id])
+
+    @property
+    def submitted_by_name(self) -> str | None:
+        return self.submitted_by.display_name if self.submitted_by else None
+
+    @property
+    def decided_by_name(self) -> str | None:
+        return self.decided_by.display_name if self.decided_by else None
+
+    @property
+    def confirmed_by_name(self) -> str | None:
+        return self.confirmed_by.display_name if self.confirmed_by else None
+
+
+class EnquiryAuditEvent(Base):
+    __tablename__ = "enquiry_audit_events"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    enquiry_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("enquiries.id", ondelete="RESTRICT"), nullable=False, index=True)
+    actor_user_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    action: Mapped[str] = mapped_column(String(40), nullable=False)
+    before_values: Mapped[dict] = mapped_column(JSON, nullable=False)
+    after_values: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+    actor: Mapped[User | None] = relationship()

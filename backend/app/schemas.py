@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, SecretStr, field_validator, model_validator
 from uuid import UUID
 
-from app.models import EnquiryStatus, UserRole
+from app.models import ChangeRequestStatus, EnquiryStatus, UserRole
 
 
 class LoginRequest(BaseModel):
@@ -131,6 +131,92 @@ class CreatePublicEnquiryRequest(BaseModel):
 
 class MergeCustomerRequest(BaseModel):
     source_customer_id: UUID
+
+
+class EnquiryEditFields(BaseModel):
+    service_type: str | None = Field(default=None, min_length=2, max_length=80)
+    source: str | None = Field(default=None, min_length=2, max_length=40)
+
+    @field_validator("service_type", "source")
+    @classmethod
+    def trim_change_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("This field cannot be blank")
+        return value
+
+    @model_validator(mode="after")
+    def require_edit(self):
+        if not any(getattr(self, name) is not None for name in self.model_fields_set):
+            raise ValueError("At least one enquiry field must be provided")
+        return self
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class EnquiryChangeRequestCreate(BaseModel):
+    request_type: str = Field(pattern="^(edit|delete)$")
+    proposed_changes: EnquiryEditFields | None = None
+    reason: str | None = Field(default=None, min_length=3, max_length=2000)
+
+    @field_validator("reason")
+    @classmethod
+    def trim_reason(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+    @model_validator(mode="after")
+    def validate_request_shape(self):
+        if self.reason is not None and not self.reason.strip():
+            raise ValueError("Reason cannot be blank")
+        if self.request_type == "edit" and self.proposed_changes is None:
+            raise ValueError("Edit requests require proposed_changes")
+        if self.request_type == "delete" and self.reason is None:
+            raise ValueError("Deletion requests require a reason")
+        if self.request_type == "delete" and self.proposed_changes is not None:
+            raise ValueError("Deletion requests cannot include proposed_changes")
+        return self
+
+
+class ChangeRequestDecision(BaseModel):
+    decision: str = Field(pattern="^(approve|reject)$")
+    note: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("note")
+    @classmethod
+    def trim_note(cls, value: str | None) -> str | None:
+        return value.strip() or None if value is not None else None
+
+
+class ChangeRequestResponse(BaseModel):
+    id: UUID
+    enquiry_id: UUID
+    request_type: str
+    status: ChangeRequestStatus
+    proposed_changes: dict | None
+    original_snapshot: dict
+    base_updated_at: datetime
+    reason: str | None
+    decision_note: str | None
+    submitted_by_user_id: UUID | None
+    submitted_by_name: str | None
+    decided_by_user_id: UUID | None
+    decided_by_name: str | None
+    confirmed_by_user_id: UUID | None
+    confirmed_by_name: str | None
+    created_at: datetime
+    decided_at: datetime | None
+    confirmed_at: datetime | None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ChangeRequestPage(BaseModel):
+    items: list[ChangeRequestResponse]
+    total: int
+    limit: int
+    offset: int
 
 
 class PublicEnquiryAccepted(BaseModel):

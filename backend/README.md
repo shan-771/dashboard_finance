@@ -96,6 +96,16 @@ All staff dashboard endpoints require an authenticated session. Mutating dashboa
 
 These routes require a staff session; writes also require the CSRF header. Completed follow-up counts are included on enquiry responses. Recording a completed contact clears its current scheduled reminder; staff can then schedule the next contact. Finalized enquiries also lose scheduled dates, while completed history is retained. Follow-ups cannot be scheduled or recorded after a final outcome or a do-not-contact instruction.
 
+## Edit and deletion approvals (Phase 5)
+
+- `POST /enquiries/{id}/change-requests` is Staff-only. Send `{"request_type":"edit","proposed_changes":{"service_type":"Real Estate"}}` for an edit, or `{"request_type":"delete","reason":"..."}` for deletion. Edit requests currently support `service_type` and `source`; customer contact data is shared across enquiries and is not edited through this endpoint.
+- `GET /change-requests?status=pending&limit=50&offset=0` is Manager-only and returns review snapshots, proposed values, submitter and reviewer names, and timestamps. Other statuses are `approved`, `rejected`, `stale`, and `completed`.
+- `PATCH /change-requests/{id}` is Manager-only and accepts `{"decision":"approve"}` or `{"decision":"reject","note":"..."}`. Approved edits apply immediately; decisions are single-use. A request becomes stale if the enquiry changed after submission.
+- Deletion approval is staged: after approving a deletion request, the Manager must call `POST /change-requests/{id}/confirm-deletion`. This marks the enquiry as deleted from active views while retaining its record, follow-up history, request, and audit history. The enquiry is checked again for changes before confirmation.
+- Managers can directly edit `service_type` or `source` with `PATCH /enquiries/{id}`. These edits and approved staff edits are recorded in the audit history.
+
+These endpoints require a staff session; writes also require the CSRF header. Staff cannot review requests, and a requester cannot approve their own request.
+
 Website intake creates a separate customer record without trying to infer identity from name, email, or phone. Staff can explicitly link that record to an existing customer after review. The initial public intake throttle is in-memory and per application process; production deployments with multiple workers should add a shared rate-limit store or edge rate limiting.
 
 The client-facing roles are `manager` and `staff`. A Manager provisions Staff accounts; there is no public registration endpoint. Developer database access and schema changes are not exposed through the client API.

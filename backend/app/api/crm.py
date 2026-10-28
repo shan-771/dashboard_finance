@@ -12,13 +12,21 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.db import get_db
 from app.core.config import get_settings
-from app.dependencies import AuthenticatedSession, get_current_auth, require_csrf
-from app.models import Customer, Enquiry, EnquiryStatus, FollowUp, User, UserRole
+from app.dependencies import AuthenticatedSession, get_current_auth, require_csrf, require_manager
+from app.models import (
+    ChangeRequestStatus, Customer, Enquiry, EnquiryAuditEvent, EnquiryChangeRequest,
+    EnquiryStatus, FollowUp, User, UserRole, utc_now,
+)
 from app.schemas import (
+    ChangeRequestDecision,
+    ChangeRequestPage,
+    ChangeRequestResponse,
     CompleteFollowUpRequest,
     CreateEnquiryRequest,
     CreatePublicEnquiryRequest,
     CustomerResponse,
+    EnquiryChangeRequestCreate,
+    EnquiryEditFields,
     EnquiryPage,
     EnquiryResponse,
     FollowUpPage,
@@ -187,8 +195,8 @@ def list_enquiries(
                 or_(Customer.name.ilike(needle), Customer.phone.ilike(needle), Customer.email.ilike(needle)),
             ).exists()
         )
-    stmt = select(Enquiry).options(joinedload(Enquiry.customer), joinedload(Enquiry.handled_by)).where(*conditions)
-    total = db.scalar(select(func.count()).select_from(Enquiry).where(*conditions)) or 0
+    stmt = select(Enquiry).options(joinedload(Enquiry.customer), joinedload(Enquiry.handled_by)).where(Enquiry.deleted_at.is_(None), *conditions)
+    total = db.scalar(select(func.count()).select_from(Enquiry).where(Enquiry.deleted_at.is_(None), *conditions)) or 0
     rows = db.scalars(stmt.order_by(Enquiry.created_at.desc()).limit(limit).offset(offset)).unique().all()
     counts = completed_follow_up_counts(db, [item.id for item in rows])
     return EnquiryPage(
@@ -251,7 +259,7 @@ def update_enquiry_status(
     enquiry = db.scalar(
         select(Enquiry)
         .options(joinedload(Enquiry.customer), joinedload(Enquiry.handled_by))
-        .where(Enquiry.id == enquiry_id)
+        .where(Enquiry.id == enquiry_id, Enquiry.deleted_at.is_(None))
     )
     if enquiry is None:
         raise HTTPException(status_code=404, detail="Enquiry not found")
@@ -273,6 +281,218 @@ def update_enquiry_status(
     return enquiry_response(enquiry, count)
 
 
+def enquiry_edit_snapshot(enquiry: Enquiry) -> dict[str, str]:
+    return {"service_type": enquiry.service_type, "source": enquiry.source}
+
+
+def request_is_stale(change_request: EnquiryChangeRequest, enquiry: Enquiry) -> bool:
+    current = enquiry.updated_at
+    base = change_request.base_updated_at
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    if base.tzinfo is None:
+        base = base.replace(tzinfo=timezone.utc)
+    return current != base
+
+
+@router.post(
+    "/enquiries/{enquiry_id}/change-requests",
+    response_model=ChangeRequestResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_csrf)],
+)
+def create_enquiry_change_request(
+    enquiry_id: UUID,
+    payload: EnquiryChangeRequestCreate,
+    db: Annotated[Session, Depends(get_db)],
+    auth: Annotated[AuthenticatedSession, Depends(get_current_auth)],
+) -> EnquiryChangeRequest:
+    if auth.user.role != UserRole.STAFF.value:
+        raise HTTPException(status_code=403, detail="Only Staff can submit approval requests")
+    enquiry = db.scalar(select(Enquiry).where(Enquiry.id == enquiry_id, Enquiry.deleted_at.is_(None)))
+    if enquiry is None:
+        raise HTTPException(status_code=404, detail="Enquiry not found")
+    pending = db.scalar(select(EnquiryChangeRequest.id).where(
+        EnquiryChangeRequest.enquiry_id == enquiry.id,
+        EnquiryChangeRequest.status.in_((ChangeRequestStatus.PENDING.value, ChangeRequestStatus.APPROVED.value)),
+    ))
+    if pending is not None:
+        raise HTTPException(status_code=409, detail="This enquiry already has a pending change request")
+    proposed = payload.proposed_changes
+    changes = proposed.model_dump(exclude_unset=True, exclude_none=True) if proposed else None
+    if payload.request_type == "edit" and not changes:
+        raise HTTPException(status_code=422, detail="Provide at least one editable field")
+    request_record = EnquiryChangeRequest(
+        enquiry_id=enquiry.id,
+        request_type=payload.request_type,
+        proposed_changes=changes,
+        original_snapshot=enquiry_edit_snapshot(enquiry),
+        base_updated_at=enquiry.updated_at,
+        reason=payload.reason,
+        submitted_by_user_id=auth.user.id,
+    )
+    db.add(request_record)
+    db.commit()
+    db.refresh(request_record)
+    return request_record
+
+
+@router.get(
+    "/change-requests",
+    response_model=ChangeRequestPage,
+    dependencies=[Depends(require_manager)],
+)
+def list_enquiry_change_requests(
+    db: Annotated[Session, Depends(get_db)],
+    status_filter: str = Query(default=ChangeRequestStatus.PENDING.value, alias="status", pattern="^(pending|approved|rejected|stale|completed)$"),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> ChangeRequestPage:
+    conditions = [EnquiryChangeRequest.status == status_filter]
+    total = db.scalar(select(func.count()).select_from(EnquiryChangeRequest).where(*conditions)) or 0
+    items = db.scalars(
+        select(EnquiryChangeRequest).where(*conditions)
+        .order_by(EnquiryChangeRequest.created_at.asc()).limit(limit).offset(offset)
+    ).all()
+    return ChangeRequestPage(items=items, total=total, limit=limit, offset=offset)
+
+
+@router.patch(
+    "/change-requests/{change_request_id}",
+    response_model=ChangeRequestResponse,
+    dependencies=[Depends(require_manager), Depends(require_csrf)],
+)
+def decide_enquiry_change_request(
+    change_request_id: UUID,
+    payload: ChangeRequestDecision,
+    db: Annotated[Session, Depends(get_db)],
+    auth: Annotated[AuthenticatedSession, Depends(get_current_auth)],
+) -> EnquiryChangeRequest:
+    change_request = db.scalar(
+        select(EnquiryChangeRequest).where(EnquiryChangeRequest.id == change_request_id).with_for_update()
+    )
+    if change_request is None:
+        raise HTTPException(status_code=404, detail="Change request not found")
+    if change_request.status != ChangeRequestStatus.PENDING.value:
+        raise HTTPException(status_code=409, detail="This request has already been decided")
+    if change_request.submitted_by_user_id == auth.user.id:
+        raise HTTPException(status_code=403, detail="You cannot approve your own request")
+    enquiry = db.scalar(select(Enquiry).where(Enquiry.id == change_request.enquiry_id).with_for_update())
+    if enquiry is None or enquiry.deleted_at is not None:
+        raise HTTPException(status_code=409, detail="The enquiry is no longer active")
+    if request_is_stale(change_request, enquiry):
+        change_request.status = ChangeRequestStatus.STALE.value
+        change_request.decided_by_user_id = auth.user.id
+        change_request.decided_at = utc_now()
+        change_request.decision_note = "Enquiry changed after this request was submitted; submit a new request."
+        db.commit()
+        raise HTTPException(status_code=409, detail="The enquiry changed after this request was submitted")
+    change_request.decided_by_user_id = auth.user.id
+    change_request.decided_at = utc_now()
+    change_request.decision_note = payload.note
+    if payload.decision == "reject":
+        change_request.status = ChangeRequestStatus.REJECTED.value
+    elif change_request.request_type == "delete":
+        # Approval is deliberately separate from the manager's explicit deletion confirmation.
+        change_request.status = ChangeRequestStatus.APPROVED.value
+    else:
+        before = enquiry_edit_snapshot(enquiry)
+        for field, value in (change_request.proposed_changes or {}).items():
+            setattr(enquiry, field, value)
+        after = enquiry_edit_snapshot(enquiry)
+        change_request.status = ChangeRequestStatus.COMPLETED.value
+        db.add(EnquiryAuditEvent(
+            enquiry_id=enquiry.id,
+            actor_user_id=auth.user.id,
+            action="approved_staff_edit",
+            before_values=before,
+            after_values=after,
+        ))
+    db.commit()
+    db.refresh(change_request)
+    return change_request
+
+
+@router.post(
+    "/change-requests/{change_request_id}/confirm-deletion",
+    response_model=ChangeRequestResponse,
+    dependencies=[Depends(require_manager), Depends(require_csrf)],
+)
+def confirm_enquiry_deletion(
+    change_request_id: UUID,
+    db: Annotated[Session, Depends(get_db)],
+    auth: Annotated[AuthenticatedSession, Depends(get_current_auth)],
+) -> EnquiryChangeRequest:
+    change_request = db.scalar(
+        select(EnquiryChangeRequest).where(EnquiryChangeRequest.id == change_request_id).with_for_update()
+    )
+    if change_request is None:
+        raise HTTPException(status_code=404, detail="Change request not found")
+    if change_request.request_type != "delete" or change_request.status != ChangeRequestStatus.APPROVED.value:
+        raise HTTPException(status_code=409, detail="Only an approved deletion request can be confirmed")
+    enquiry = db.scalar(select(Enquiry).where(Enquiry.id == change_request.enquiry_id).with_for_update())
+    if enquiry is None or enquiry.deleted_at is not None:
+        raise HTTPException(status_code=409, detail="The enquiry is no longer active")
+    if request_is_stale(change_request, enquiry):
+        change_request.status = ChangeRequestStatus.STALE.value
+        change_request.decision_note = "Enquiry changed after deletion approval; review the record again."
+        db.commit()
+        raise HTTPException(status_code=409, detail="The enquiry changed after deletion approval")
+    before = enquiry_edit_snapshot(enquiry)
+    enquiry.deleted_at = utc_now()
+    enquiry.next_follow_up_at = None
+    change_request.status = ChangeRequestStatus.COMPLETED.value
+    change_request.confirmed_by_user_id = auth.user.id
+    change_request.confirmed_at = utc_now()
+    db.add(EnquiryAuditEvent(
+        enquiry_id=enquiry.id,
+        actor_user_id=auth.user.id,
+        action="confirmed_soft_deletion",
+        before_values=before,
+        after_values={"deleted": True, "reason": change_request.reason},
+    ))
+    db.commit()
+    db.refresh(change_request)
+    return change_request
+
+
+@router.patch(
+    "/enquiries/{enquiry_id}",
+    response_model=EnquiryResponse,
+    dependencies=[Depends(require_manager), Depends(require_csrf)],
+)
+def manager_edit_enquiry(
+    enquiry_id: UUID,
+    payload: EnquiryEditFields,
+    db: Annotated[Session, Depends(get_db)],
+    auth: Annotated[AuthenticatedSession, Depends(get_current_auth)],
+) -> EnquiryResponse:
+    enquiry = db.scalar(
+        select(Enquiry).options(joinedload(Enquiry.customer), joinedload(Enquiry.handled_by))
+        .where(Enquiry.id == enquiry_id, Enquiry.deleted_at.is_(None)).with_for_update()
+    )
+    if enquiry is None:
+        raise HTTPException(status_code=404, detail="Enquiry not found")
+    changes = payload.model_dump(exclude_unset=True, exclude_none=True)
+    if not changes:
+        raise HTTPException(status_code=422, detail="Provide at least one editable field")
+    before = enquiry_edit_snapshot(enquiry)
+    for field, value in changes.items():
+        setattr(enquiry, field, value)
+    after = enquiry_edit_snapshot(enquiry)
+    db.add(EnquiryAuditEvent(
+        enquiry_id=enquiry.id,
+        actor_user_id=auth.user.id,
+        action="manager_direct_edit",
+        before_values=before,
+        after_values=after,
+    ))
+    db.commit()
+    db.refresh(enquiry)
+    count = db.scalar(select(func.count(FollowUp.id)).where(FollowUp.enquiry_id == enquiry.id)) or 0
+    return enquiry_response(enquiry, count)
+
+
 @router.put(
     "/enquiries/{enquiry_id}/follow-up",
     response_model=EnquiryResponse,
@@ -286,7 +506,7 @@ def schedule_enquiry_follow_up(
 ) -> EnquiryResponse:
     enquiry = db.scalar(
         select(Enquiry).options(joinedload(Enquiry.customer), joinedload(Enquiry.handled_by))
-        .where(Enquiry.id == enquiry_id)
+        .where(Enquiry.id == enquiry_id, Enquiry.deleted_at.is_(None))
     )
     if enquiry is None:
         raise HTTPException(status_code=404, detail="Enquiry not found")
@@ -310,7 +530,7 @@ def record_completed_follow_up(
     db: Annotated[Session, Depends(get_db)],
     auth: Annotated[AuthenticatedSession, Depends(get_current_auth)],
 ) -> FollowUp:
-    enquiry = db.get(Enquiry, enquiry_id)
+    enquiry = db.scalar(select(Enquiry).where(Enquiry.id == enquiry_id, Enquiry.deleted_at.is_(None)))
     if enquiry is None:
         raise HTTPException(status_code=404, detail="Enquiry not found")
     require_actionable_enquiry(enquiry)
@@ -335,7 +555,7 @@ def list_completed_follow_ups(
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ) -> FollowUpHistoryPage:
-    if db.get(Enquiry, enquiry_id) is None:
+    if db.scalar(select(Enquiry.id).where(Enquiry.id == enquiry_id, Enquiry.deleted_at.is_(None))) is None:
         raise HTTPException(status_code=404, detail="Enquiry not found")
     base = select(FollowUp).where(FollowUp.enquiry_id == enquiry_id)
     total = db.scalar(select(func.count()).select_from(FollowUp).where(FollowUp.enquiry_id == enquiry_id)) or 0
@@ -356,6 +576,7 @@ def list_actionable_follow_ups(
     today_start = datetime.combine(now.date(), time.min, tzinfo=zone).astimezone(timezone.utc)
     tomorrow_start = datetime.combine(now.date() + timedelta(days=1), time.min, tzinfo=zone).astimezone(timezone.utc)
     conditions = [
+        Enquiry.deleted_at.is_(None),
         Enquiry.status.in_(ACTIVE_STATUSES),
         Enquiry.do_not_contact.is_(False),
         Enquiry.next_follow_up_at.is_not(None),
@@ -393,7 +614,7 @@ def update_enquiry_handler(
     enquiry = db.scalar(
         select(Enquiry)
         .options(joinedload(Enquiry.customer), joinedload(Enquiry.handled_by))
-        .where(Enquiry.id == enquiry_id)
+        .where(Enquiry.id == enquiry_id, Enquiry.deleted_at.is_(None))
     )
     if enquiry is None:
         raise HTTPException(status_code=404, detail="Enquiry not found")
