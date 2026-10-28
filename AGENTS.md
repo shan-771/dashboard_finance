@@ -155,7 +155,8 @@ Staff must be able to:
 
 - View all enquiries and customer records.
 - Create enquiries manually.
-- Handle enquiries without claiming or assigning them.
+- Pick unassigned enquiries through the first-claim-wins workflow.
+- Add short notes and schedule the next follow-up on enquiries they have picked.
 - Update enquiry statuses according to business rules.
 - Record completed follow-up dates.
 - Schedule future follow-ups.
@@ -165,19 +166,19 @@ Staff must be able to:
 
 Staff must not bypass manager approval when editing or requesting deletion of existing enquiries.
 
-### 4.4 No Enquiry Assignment System
+### 4.4 Enquiry Claiming and Handling
 
-**Do not implement an enquiry claiming or assignment workflow.**
+All staff can see all enquiries, but only one Staff member can claim each unassigned enquiry.
 
-All staff can see all enquiries.
-
-Each enquiry has a lightweight `handled_by` field identifying the staff member currently handling it.
-
-This field is for visibility and accountability only. It must not restrict enquiry visibility or behave like an assignment.
-
-Staff may change who is handling an enquiry if permitted by the finalized business rules. Do not implement automatic ownership transfers.
-
-The manager can oversee all enquiries and their handlers.
+- New enquiries start unassigned.
+- Staff explicitly pick an enquiry from its detail window. The first successful database update sets status `Assigned` and records that Staff member in `handled_by`.
+- A competing claim must fail with a clear message naming the Staff member who picked it.
+- Staff cannot claim an enquiry already handled by another Staff member or change its handler directly.
+- A database-backed rate limit applies to claim attempts; do not poll the database to simulate notifications.
+- Picked enquiries stay in the Enquiries list with status `Assigned` until their handler saves the call note and schedules a follow-up.
+- The detail window supports short enquiry-specific notes and a next follow-up date. The default date is two days from now. Saving both moves the enquiry to `Follow-ups`.
+- The Follow-ups tiles appear in this order: Upcoming, Overdue, Due today. Do not show a separate `Needs scheduling` tile.
+- Only the handling Staff member can edit call notes, schedule contact, or log completed follow-ups. Managers retain oversight and can manage handler changes.
 
 ---
 
@@ -238,7 +239,7 @@ The property-specific fields and full service catalog will be finalized later. D
 
 ### 5.3 Historical Integrity
 
-Do not permanently erase related customer, property, or enquiry history through cascading deletion unless explicitly approved.
+After a Manager confirms an enquiry deletion, keep it recoverable for five days. Then permanently erase the enquiry and its linked follow-up, request, and audit history. Permanently erase its Customer record only when no other enquiries remain linked to that customer. A Manager can restore it or permanently erase it early during the recovery window.
 
 A property removed from the public website must not automatically erase historical enquiries or property information needed by the business.
 
@@ -250,10 +251,10 @@ The enquiry deletion approval workflow must be designed deliberately. Do not imp
 
 ## 6. Enquiry Lifecycle
 
-The initial lifecycle consists of:
+The current lifecycle consists of:
 
 1. `New`
-2. `Attended`
+2. `Assigned`
 3. `Follow-ups`
 4. A final outcome:
    - `Closed`
@@ -270,13 +271,13 @@ Website leads must appear in the dashboard immediately without manager approval.
 
 Manual enquiries created by staff or the manager must also enter the same workflow without a separate approval requirement for creation.
 
-### 6.2 Attended
+### 6.2 Assigned
 
-Staff have contacted the customer and started handling the enquiry.
+Staff have claimed the enquiry and are responsible for handling it.
 
-Staff manually change the status from `New` to `Attended`.
+The claim records the Staff handler. The enquiry remains in the Enquiries list with status `Assigned` until a follow-up date is saved.
 
-Do not implement an automatic `Start Handling` action that changes the status or handler.
+After speaking with the customer, Staff save a short note and schedule a follow-up (default two days later); this moves the enquiry to `Follow-ups`.
 
 ### 6.3 Follow-ups
 
@@ -297,7 +298,7 @@ Do not block status changes solely because fewer than two follow-ups have been r
 
 Use `Closed` when the customer's requirement has been fulfilled, such as securing the desired property or obtaining the intended loan.
 
-Staff can close an enquiry as soon as the requirement is fulfilled. Two follow-ups are not required.
+Staff can close an enquiry as soon as the requirement is fulfilled. The Follow-ups `Complete` action also closes the enquiry while recording its completed contact and clearing its reminder. Two follow-ups are not required.
 
 ### 6.5 Open
 
@@ -416,7 +417,7 @@ Only authorized users may perform these operations.
 
 Staff must submit a deletion request instead of directly deleting an enquiry.
 
-The request should include a reason.
+Deletion requests do not require a reason.
 
 While deletion is pending:
 
@@ -428,9 +429,9 @@ The manager can approve or reject the request.
 
 If rejected, the enquiry remains active.
 
-If approved, the manager must confirm the deletion before the operation proceeds.
+The manager's explicit confirmation in the review dialog starts a five-day recovery window and records the decision and audit event in one transaction. During that window, the Manager can restore the enquiry or permanently erase it immediately. An automatic backend cleanup permanently erases expired records and their linked history; it removes the Customer row only if no other enquiries remain linked to it.
 
-Preserve an appropriate audit record of the request and decision. Determine the final retention strategy before implementing irreversible physical deletion.
+Preserve request and audit records throughout the five-day recovery window. The explicit permanent-purge action removes those linked records together with the enquiry.
 
 ### 8.4 Manager Direct Edits
 
@@ -653,7 +654,7 @@ After approval:
 - Add service type and source fields.
 - Implement the agreed status lifecycle.
 - Add enquiry filtering and pagination as needed.
-- Add the `Handled By` field without an assignment workflow.
+- Add the first-claim-wins `Handled By` workflow and assignment status.
 
 Test the main enquiry lifecycle before proceeding.
 

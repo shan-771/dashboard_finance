@@ -1,4 +1,10 @@
-data base pe notification system lagana h so that one user is assigned to only one staff member and if its assigned and other staff tries to 
-take that lead it shows a notification that it is taken 
-but have to rate limit the database also 
+Enquiry claiming and follow-up workflow
 
+- New enquiries remain unassigned until a Staff member explicitly picks one.
+- The first claim wins in the database. Set the enquiry to Assigned and store the Staff handler; tell competing Staff who already picked it.
+- Use a database-backed rate limit of 10 claim attempts per Staff account per minute. Do not poll the database for notifications.
+- The enquiry detail window shows the customer's contact details, call links, and a short notes field for that enquiry.
+- After speaking with the customer, the handler saves the note and schedules the next follow-up. Default the date/time to two days from the current time, and move the enquiry to Follow-ups.
+- Claimed enquiries remain in Enquiries until the handler saves call notes and a follow-up date.
+- Follow-ups contains only scheduled enquiries, in this tile order: Upcoming, Overdue, Due today. Do not show a Needs scheduling tile.
+- Completing a scheduled follow-up records the completed contact, closes the enquiry, clears the reminder, and updates its dashboard status to Closed.

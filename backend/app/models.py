@@ -17,6 +17,7 @@ class UserRole(StrEnum):
 
 class EnquiryStatus(StrEnum):
     NEW = "New"
+    ASSIGNED = "Assigned"
     ATTENDED = "Attended"
     FOLLOW_UPS = "Follow-ups"
     CLOSED = "Closed"
@@ -49,6 +50,8 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(20), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    claim_attempt_window_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    claim_attempt_count: Mapped[int] = mapped_column(default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
@@ -97,7 +100,7 @@ class Customer(Base):
 class Enquiry(Base):
     __tablename__ = "enquiries"
     __table_args__ = (
-        CheckConstraint("status IN ('New', 'Attended', 'Follow-ups', 'Closed', 'Open', 'Lost')", name="ck_enquiries_status"),
+        CheckConstraint("status IN ('New', 'Assigned', 'Attended', 'Follow-ups', 'Closed', 'Open', 'Lost')", name="ck_enquiries_status"),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
@@ -106,6 +109,7 @@ class Enquiry(Base):
     source: Mapped[str] = mapped_column(String(40), nullable=False)
     status: Mapped[str] = mapped_column(String(20), default=EnquiryStatus.NEW.value, nullable=False, index=True)
     handled_by_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     outcome_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     do_not_contact: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     next_follow_up_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)

@@ -38,12 +38,15 @@ def client(test_session_factory: sessionmaker[Session]) -> Iterator[TestClient]:
         finally:
             db.close()
 
+    previous_sweeper_state = getattr(app.state, "enable_retention_sweeper", True)
+    app.state.enable_retention_sweeper = False
     app.dependency_overrides[get_db] = override_get_db
     try:
         with TestClient(app) as test_client:
             yield test_client
     finally:
         app.dependency_overrides.clear()
+        app.state.enable_retention_sweeper = previous_sweeper_state
 
 
 @pytest.fixture

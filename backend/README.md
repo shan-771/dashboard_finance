@@ -83,7 +83,9 @@ All staff dashboard endpoints require an authenticated session. Mutating dashboa
 - `GET /enquiries?status=New&service_type=Real%20Estate&source=Phone&search=...&limit=50&offset=0` — paginated enquiry list with optional filters.
 - `POST /enquiries` — create an enquiry with either a new `customer` object (`name`, `phone`, optional `email`) or an existing `customer_id`, plus `service_type` and `source`.
 - `PATCH /enquiries/{id}/status` — update status within the allowed lifecycle and optionally record an outcome reason or do-not-contact instruction for Lost enquiries.
-- `PATCH /enquiries/{id}/handler` — any authenticated staff member can set or clear the informational handler; the selected user must be an active Staff account and this does not restrict enquiry access.
+- `POST /enquiries/{id}/claim` — Staff-only, first-claim-wins assignment for a New enquiry. An already-claimed enquiry returns `409` and names its handler. Claims are limited to 10 attempts per Staff account per minute using database-stored counters.
+- `PUT /enquiries/{id}/contact` — the assigned Staff member saves short call notes and a timezone-aware next follow-up date; status becomes `Follow-ups`.
+- `PATCH /enquiries/{id}/handler` — Manager-only handler changes; Staff cannot bypass the claim workflow.
 - `POST /customers/{target_id}/link` — explicitly link a source customer record to a target. Its enquiries move to the target; the source record is retained with a link to the target.
 - `POST /public/enquiries` — public website intake. Accepts `customer` contact details and `service_type`; source is set to `Website`, status starts as `New`, and the response does not reveal customer data.
 
@@ -92,16 +94,18 @@ All staff dashboard endpoints require an authenticated session. Mutating dashboa
 - `POST /enquiries/{id}/follow-ups` records a completed follow-up date/time. Omit `completed_at` to use the current UTC time, or supply an ISO datetime with a timezone.
 - `GET /enquiries/{id}/follow-ups` returns that enquiry's paginated completed history.
 - `PUT /enquiries/{id}/follow-up` sets or clears `next_follow_up_at` with an ISO datetime including its timezone (or `null` to clear it).
-- `GET /follow-ups?bucket=due-today|upcoming|overdue&limit=50&offset=0` returns paginated actionable enquiries. “Due today” uses `BUSINESS_TIMEZONE`, which defaults to `Asia/Kolkata`.
+- `GET /follow-ups?bucket=due-today|upcoming|overdue&limit=50&offset=0` returns paginated actionable enquiries with scheduled dates. “Due today” uses `BUSINESS_TIMEZONE`, which defaults to `Asia/Kolkata`. Enquiries with status `Assigned` remain in the Enquiries list until their handler saves call notes and schedules a follow-up.
 
-These routes require a staff session; writes also require the CSRF header. Completed follow-up counts are included on enquiry responses. Recording a completed contact clears its current scheduled reminder; staff can then schedule the next contact. Finalized enquiries also lose scheduled dates, while completed history is retained. Follow-ups cannot be scheduled or recorded after a final outcome or a do-not-contact instruction.
+These routes require a staff session; writes also require the CSRF header. Completed follow-up counts and per-enquiry notes are included on enquiry responses. Staff can only edit notes, schedule contact, and log completed follow-ups on enquiries they claimed; Managers retain oversight. The Follow-ups **Complete** action records the completed contact, sets enquiry status to `Closed`, and clears its scheduled reminder in the same transaction. Finalized enquiries lose scheduled dates, while completed history is retained. Follow-ups cannot be scheduled or recorded after a final outcome or a do-not-contact instruction.
 
 ## Edit and deletion approvals (Phase 5)
 
-- `POST /enquiries/{id}/change-requests` is Staff-only. Send `{"request_type":"edit","proposed_changes":{"service_type":"Real Estate"}}` for an edit, or `{"request_type":"delete","reason":"..."}` for deletion. Edit requests currently support `service_type` and `source`; customer contact data is shared across enquiries and is not edited through this endpoint.
+- `POST /enquiries/{id}/change-requests` is Staff-only. Send `{"request_type":"edit","proposed_changes":{"service_type":"Real Estate"}}` for an edit, or `{"request_type":"delete"}` for deletion. Edit requests currently support `service_type` and `source`; customer contact data is shared across enquiries and is not edited through this endpoint.
+- `GET /enquiries/{id}/change-requests` returns the active deletion request, if one exists, so staff can see whether it is pending approval or approved and awaiting confirmation.
 - `GET /change-requests?status=pending&limit=50&offset=0` is Manager-only and returns review snapshots, proposed values, submitter and reviewer names, and timestamps. Other statuses are `approved`, `rejected`, `stale`, and `completed`.
 - `PATCH /change-requests/{id}` is Manager-only and accepts `{"decision":"approve"}` or `{"decision":"reject","note":"..."}`. Approved edits apply immediately; decisions are single-use. A request becomes stale if the enquiry changed after submission.
-- Deletion approval is staged: after approving a deletion request, the Manager must call `POST /change-requests/{id}/confirm-deletion`. This marks the enquiry as deleted from active views while retaining its record, follow-up history, request, and audit history. The enquiry is checked again for changes before confirmation.
+- For a deletion request, the Manager's `approve` decision is also the final confirmation: it removes the enquiry from active views in the same transaction while retaining its record, follow-up history, request, and audit history. The enquiry is checked for stale changes first. The separate confirmation route remains for deletion requests approved before this single-confirmation flow.
+- Soft-deleted enquiries are recoverable for five days. `GET /enquiries/deleted` lists them for Managers, `POST /enquiries/{id}/restore` restores one, and `DELETE /enquiries/{id}/permanent` permanently erases one immediately. An in-process cleanup task permanently erases expired deleted enquiries automatically. Purging removes the enquiry's follow-ups, change requests, and audit events; it removes the shared Customer record only when no other enquiries remain linked to that customer.
 - Managers can directly edit `service_type` or `source` with `PATCH /enquiries/{id}`. These edits and approved staff edits are recorded in the audit history.
 
 These endpoints require a staff session; writes also require the CSRF header. Staff cannot review requests, and a requester cannot approve their own request.

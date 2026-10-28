@@ -22,18 +22,34 @@ export type CreateStaffPayload = {
 
 export type ApiEnquiry = {
   id: string;
-  customer: { id: string; name: string; phone: string; email: string | null; created_at: string };
+  customer: ApiCustomer;
   service_type: string;
   source: string;
-  status: "New" | "Attended" | "Follow-ups" | "Closed" | "Open" | "Lost";
+  status: "New" | "Assigned" | "Attended" | "Follow-ups" | "Closed" | "Open" | "Lost";
   handled_by_id: string | null;
   handled_by_name: string | null;
+  notes: string | null;
   outcome_reason: string | null;
   do_not_contact: boolean;
   next_follow_up_at: string | null;
   completed_follow_up_count: number;
   created_at: string;
   updated_at: string;
+};
+export type ApiDeletedEnquiry = ApiEnquiry & { deleted_at: string; purge_at: string };
+
+export type ApiCustomer = { id: string; name: string; phone: string; email: string | null; created_at: string };
+export type ApiChangeRequest = {
+  id: string;
+  enquiry_id: string;
+  request_type: "edit" | "delete";
+  status: "pending" | "approved" | "rejected" | "stale" | "completed";
+  original_snapshot: Record<string, unknown>;
+  reason: string | null;
+  decision_note: string | null;
+  submitted_by_name: string | null;
+  decided_by_name: string | null;
+  created_at: string;
 };
 
 export type ApiPage<T> = { items: T[]; total: number; limit: number; offset: number };
@@ -91,6 +107,29 @@ export const api = {
       csrfToken,
     ),
   listEnquiries: () => request<ApiPage<ApiEnquiry>>("/enquiries?limit=100&offset=0"),
+  claimEnquiry: (enquiryId: string, csrfToken: string) =>
+    request<ApiEnquiry>(`/enquiries/${encodeURIComponent(enquiryId)}/claim`, { method: "POST", body: JSON.stringify({}) }, csrfToken),
+  updateEnquiryStatus: (enquiryId: string, payload: { status: "Closed" | "Open" | "Lost"; outcome_reason?: string; do_not_contact?: boolean }, csrfToken: string) =>
+    request<ApiEnquiry>(`/enquiries/${encodeURIComponent(enquiryId)}/status`, { method: "PATCH", body: JSON.stringify(payload) }, csrfToken),
+  saveEnquiryContact: (enquiryId: string, payload: { notes: string; next_follow_up_at: string }, csrfToken: string) =>
+    request<ApiEnquiry>(`/enquiries/${encodeURIComponent(enquiryId)}/contact`, { method: "PUT", body: JSON.stringify(payload) }, csrfToken),
+  listCustomers: () => request<ApiCustomer[]>("/customers?limit=100&offset=0"),
+  requestEnquiryDeletion: (enquiryId: string, csrfToken: string) =>
+    request<ApiChangeRequest>(`/enquiries/${encodeURIComponent(enquiryId)}/change-requests`, { method: "POST", body: JSON.stringify({ request_type: "delete" }) }, csrfToken),
+  getEnquiryDeletionRequest: (enquiryId: string) =>
+    request<ApiChangeRequest | null>(`/enquiries/${encodeURIComponent(enquiryId)}/change-requests`),
+  listChangeRequests: (status: "pending" | "approved") =>
+    request<{ items: ApiChangeRequest[]; total: number; limit: number; offset: number }>(`/change-requests?status=${status}&limit=100&offset=0`),
+  listDeletedEnquiries: () =>
+    request<{ items: ApiDeletedEnquiry[]; total: number; limit: number; offset: number }>("/enquiries/deleted?limit=100&offset=0"),
+  restoreDeletedEnquiry: (enquiryId: string, csrfToken: string) =>
+    request<ApiEnquiry>(`/enquiries/${encodeURIComponent(enquiryId)}/restore`, { method: "POST", body: JSON.stringify({}) }, csrfToken),
+  permanentlyDeleteEnquiry: (enquiryId: string, csrfToken: string) =>
+    request<{ enquiry_id: string; customer_deleted: boolean; permanently_deleted: boolean }>(`/enquiries/${encodeURIComponent(enquiryId)}/permanent`, { method: "DELETE" }, csrfToken),
+  decideChangeRequest: (requestId: string, decision: "approve" | "reject", csrfToken: string) =>
+    request<ApiChangeRequest>(`/change-requests/${encodeURIComponent(requestId)}`, { method: "PATCH", body: JSON.stringify({ decision }) }, csrfToken),
+  confirmEnquiryDeletion: (requestId: string, csrfToken: string) =>
+    request<ApiChangeRequest>(`/change-requests/${encodeURIComponent(requestId)}/confirm-deletion`, { method: "POST", body: JSON.stringify({}) }, csrfToken),
   createEnquiry: (payload: CreateEnquiryPayload, csrfToken: string) =>
     request<ApiEnquiry>("/enquiries", { method: "POST", body: JSON.stringify(payload) }, csrfToken),
   databaseHealth: () => request<DatabaseHealth>("/health/database"),

@@ -79,27 +79,145 @@ def test_staff_can_view_and_create_enquiries(client: TestClient, make_user) -> N
     assert client.get("/enquiries").json()["total"] == 1
 
 
-def test_staff_can_set_and_clear_non_restrictive_handler(client: TestClient, make_user) -> None:
+def test_staff_first_claim_wins_and_other_staff_gets_taken_notice(client: TestClient, make_user) -> None:
+    manager = make_user()
+    manager_csrf = sign_in(client, manager.user_id)
+    enquiry = client.post(
+        "/enquiries", headers={"X-CSRF-Token": manager_csrf}, json=new_enquiry_payload()
+    ).json()
+    first_staff = make_user(email="staff@example.com", role=UserRole.STAFF)
+    first_csrf = sign_in(client, first_staff.user_id)
+    claim = client.post(
+        f"/enquiries/{enquiry['id']}/claim", headers={"X-CSRF-Token": first_csrf}, json={}
+    )
+    assert claim.status_code == 200
+    assert claim.json()["status"] == "Assigned"
+    assert claim.json()["handled_by_id"] == str(first_staff.id)
+    assert claim.json()["handled_by_name"] == first_staff.display_name
+
+    second_staff = make_user(email="second@example.com", role=UserRole.STAFF)
+    second_csrf = sign_in(client, second_staff.user_id)
+    competing_claim = client.post(
+        f"/enquiries/{enquiry['id']}/claim", headers={"X-CSRF-Token": second_csrf}, json={}
+    )
+    assert competing_claim.status_code == 409
+    assert first_staff.display_name in competing_claim.json()["detail"]
+
+
+def test_claimed_enquiry_notes_and_follow_up_are_saved_by_handler(client: TestClient, make_user) -> None:
+    manager = make_user()
+    manager_csrf = sign_in(client, manager.user_id)
+    enquiry = client.post(
+        "/enquiries", headers={"X-CSRF-Token": manager_csrf}, json=new_enquiry_payload()
+    ).json()
     staff = make_user(email="staff@example.com", role=UserRole.STAFF)
-    handler = make_user(email="handler@example.com", role=UserRole.STAFF)
-    csrf = sign_in(client, staff.user_id)
-    headers = {"X-CSRF-Token": csrf}
-    enquiry = client.post("/enquiries", headers=headers, json=new_enquiry_payload()).json()
+    staff_csrf = sign_in(client, staff.user_id)
+    headers = {"X-CSRF-Token": staff_csrf}
+    claimed = client.post(f"/enquiries/{enquiry['id']}/claim", headers=headers, json={})
+    assert claimed.status_code == 200
 
-    assigned = client.patch(
-        f"/enquiries/{enquiry['id']}/handler",
+    follow_up_at = datetime.now(timezone.utc) + timedelta(days=2)
+    saved = client.put(
+        f"/enquiries/{enquiry['id']}/contact",
         headers=headers,
-        json={"handled_by_id": str(handler.id)},
+        json={"notes": "Discussed financing options", "next_follow_up_at": follow_up_at.isoformat()},
     )
-    assert assigned.status_code == 200
-    assert assigned.json()["handled_by_id"] == str(handler.id)
-    assert assigned.json()["handled_by_name"] == handler.display_name
+    assert saved.status_code == 200
+    assert saved.json()["notes"] == "Discussed financing options"
+    assert saved.json()["status"] == "Follow-ups"
+    assert saved.json()["handled_by_id"] == str(staff.id)
+    upcoming = client.get("/follow-ups?bucket=upcoming")
+    assert any(row["id"] == enquiry["id"] for row in upcoming.json()["items"])
 
-    cleared = client.patch(
-        f"/enquiries/{enquiry['id']}/handler", headers=headers, json={"handled_by_id": None}
+    other = make_user(email="other@example.com", role=UserRole.STAFF)
+    other_csrf = sign_in(client, other.user_id)
+    rejected = client.put(
+        f"/enquiries/{enquiry['id']}/contact",
+        headers={"X-CSRF-Token": other_csrf},
+        json={"notes": "Overwriting", "next_follow_up_at": follow_up_at.isoformat()},
     )
-    assert cleared.status_code == 200
-    assert cleared.json()["handled_by_id"] is None
+    assert rejected.status_code == 403
+    rejected_outcome = client.patch(
+        f"/enquiries/{enquiry['id']}/status",
+        headers={"X-CSRF-Token": other_csrf},
+        json={"status": "Closed"},
+    )
+    assert rejected_outcome.status_code == 403
+
+
+def test_claimed_staff_can_mark_lost_do_not_contact_without_followup(client: TestClient, make_user) -> None:
+    manager = make_user()
+    manager_csrf = sign_in(client, manager.user_id)
+    enquiry = client.post(
+        "/enquiries", headers={"X-CSRF-Token": manager_csrf}, json=new_enquiry_payload()
+    ).json()
+    staff = make_user(email="staff@example.com", role=UserRole.STAFF)
+    staff_csrf = sign_in(client, staff.user_id)
+    headers = {"X-CSRF-Token": staff_csrf}
+    claimed = client.post(f"/enquiries/{enquiry['id']}/claim", headers=headers, json={})
+    assert claimed.status_code == 200
+
+    lost = client.patch(
+        f"/enquiries/{enquiry['id']}/status",
+        headers=headers,
+        json={"status": "Lost", "do_not_contact": True, "outcome_reason": "Customer declined further contact"},
+    )
+    assert lost.status_code == 200
+    assert lost.json()["status"] == "Lost"
+    assert lost.json()["do_not_contact"] is True
+    assert lost.json()["outcome_reason"] == "Customer declined further contact"
+    assert lost.json()["next_follow_up_at"] is None
+    assert client.put(
+        f"/enquiries/{enquiry['id']}/follow-up",
+        headers=headers,
+        json={"next_follow_up_at": (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()},
+    ).status_code == 409
+
+
+def test_handler_can_mark_enquiry_open_and_final_outcome_clears_schedule(client: TestClient, make_user) -> None:
+    manager = make_user()
+    manager_csrf = sign_in(client, manager.user_id)
+    enquiry = client.post(
+        "/enquiries", headers={"X-CSRF-Token": manager_csrf}, json=new_enquiry_payload()
+    ).json()
+    staff = make_user(email="staff@example.com", role=UserRole.STAFF)
+    staff_csrf = sign_in(client, staff.user_id)
+    headers = {"X-CSRF-Token": staff_csrf}
+    assert client.post(f"/enquiries/{enquiry['id']}/claim", headers=headers, json={}).status_code == 200
+    follow_up_at = datetime.now(timezone.utc) + timedelta(days=2)
+    saved = client.put(
+        f"/enquiries/{enquiry['id']}/contact",
+        headers=headers,
+        json={"notes": "Requirement not met yet", "next_follow_up_at": follow_up_at.isoformat()},
+    )
+    assert saved.status_code == 200
+
+    opened = client.patch(
+        f"/enquiries/{enquiry['id']}/status",
+        headers=headers,
+        json={"status": "Open", "outcome_reason": "May contact about future offers"},
+    )
+    assert opened.status_code == 200
+    assert opened.json()["status"] == "Open"
+    assert opened.json()["next_follow_up_at"] is None
+    assert opened.json()["outcome_reason"] == "May contact about future offers"
+
+
+def test_claim_endpoint_is_database_rate_limited_per_staff(client: TestClient, make_user) -> None:
+    manager = make_user()
+    manager_csrf = sign_in(client, manager.user_id)
+    enquiry_ids = [
+        client.post("/enquiries", headers={"X-CSRF-Token": manager_csrf}, json=new_enquiry_payload(f"Lead {index}")).json()["id"]
+        for index in range(11)
+    ]
+    staff = make_user(email="staff@example.com", role=UserRole.STAFF)
+    staff_csrf = sign_in(client, staff.user_id)
+    results = [
+        client.post(f"/enquiries/{enquiry_id}/claim", headers={"X-CSRF-Token": staff_csrf}, json={})
+        for enquiry_id in enquiry_ids
+    ]
+    assert [result.status_code for result in results[:10]] == [200] * 10
+    assert results[10].status_code == 429
 
 
 def test_enquiry_status_transitions_and_do_not_contact(client: TestClient, make_user) -> None:
@@ -197,6 +315,7 @@ def test_completed_follow_ups_and_actionable_date_buckets(client: TestClient, ma
     due_record = next(row for row in listed if row["id"] == enquiries["Due Today"]["id"])
     assert due_record["completed_follow_up_count"] == 1
     assert due_record["next_follow_up_at"] is None
+    assert due_record["status"] == "Closed"
 
     for bucket, expected_name in (("upcoming", "Upcoming"), ("overdue", "Overdue")):
         response = client.get(f"/follow-ups?bucket={bucket}")

@@ -159,12 +159,12 @@ class EnquiryEditFields(BaseModel):
 class EnquiryChangeRequestCreate(BaseModel):
     request_type: str = Field(pattern="^(edit|delete)$")
     proposed_changes: EnquiryEditFields | None = None
-    reason: str | None = Field(default=None, min_length=3, max_length=2000)
+    reason: str | None = Field(default=None, max_length=2000)
 
     @field_validator("reason")
     @classmethod
     def trim_reason(cls, value: str | None) -> str | None:
-        return value.strip() if value is not None else None
+        return value.strip() or None if value is not None else None
 
     @model_validator(mode="after")
     def validate_request_shape(self):
@@ -172,8 +172,6 @@ class EnquiryChangeRequestCreate(BaseModel):
             raise ValueError("Reason cannot be blank")
         if self.request_type == "edit" and self.proposed_changes is None:
             raise ValueError("Edit requests require proposed_changes")
-        if self.request_type == "delete" and self.reason is None:
-            raise ValueError("Deletion requests require a reason")
         if self.request_type == "delete" and self.proposed_changes is not None:
             raise ValueError("Deletion requests cannot include proposed_changes")
         return self
@@ -238,6 +236,23 @@ class UpdateEnquiryHandlerRequest(BaseModel):
     handled_by_id: UUID | None
 
 
+class SaveEnquiryContactRequest(BaseModel):
+    notes: str = Field(default="", max_length=3000)
+    next_follow_up_at: datetime
+
+    @field_validator("notes")
+    @classmethod
+    def trim_notes(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("next_follow_up_at")
+    @classmethod
+    def require_timezone(cls, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            raise ValueError("Follow-up date and time must include a timezone")
+        return value.astimezone(timezone.utc)
+
+
 class ScheduleFollowUpRequest(BaseModel):
     next_follow_up_at: datetime | None
 
@@ -278,6 +293,7 @@ class EnquiryResponse(BaseModel):
     status: EnquiryStatus
     handled_by_id: UUID | None
     handled_by_name: str | None
+    notes: str | None
     outcome_reason: str | None
     do_not_contact: bool
     next_follow_up_at: datetime | None
@@ -323,3 +339,21 @@ class EnquiryPage(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class DeletedEnquiryResponse(EnquiryResponse):
+    deleted_at: datetime
+    purge_at: datetime
+
+
+class DeletedEnquiryPage(BaseModel):
+    items: list[DeletedEnquiryResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class EnquiryPurgeResponse(BaseModel):
+    enquiry_id: UUID
+    customer_deleted: bool
+    permanently_deleted: bool = True
