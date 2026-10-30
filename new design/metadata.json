@@ -1,0 +1,6 @@
+{
+  "name": "MI FINS CRM Dashboard",
+  "description": "Real estate and finance CRM dashboard for lead management, customer tracking, follow-ups, and approval workflows.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

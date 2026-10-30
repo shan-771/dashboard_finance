@@ -1,5 +1,9 @@
 {
-  "description": "Manage and track finance enquiries efficiently with a responsive dashboard featuring lead assignment, follow-ups, status updates, and detailed activity logs.",
+  "title": "MI FINS CRM Dashboard",
+  "description": "Real estate and finance CRM dashboard for lead management, customer tracking, follow-ups, and approval workflows.",
+  "icons": {
+    "icon": "/favicon.svg"
+  },
   "robots": {
     "index": false
   },

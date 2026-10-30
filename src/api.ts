@@ -55,6 +55,16 @@ export type ApiChangeRequest = {
 export type ApiPage<T> = { items: T[]; total: number; limit: number; offset: number };
 export type FollowUpBucket = "due-today" | "upcoming" | "overdue";
 export type DatabaseHealth = { status: string; database: string; business_timezone: string };
+export type ApiNotification = {
+  id: string;
+  notification_type: "new_enquiry" | "deletion_request" | "deletion_decision";
+  title: string;
+  message: string;
+  enquiry_id: string | null;
+  created_at: string;
+  read_at: string | null;
+};
+export type ApiNotificationPage = { items: ApiNotification[]; unread_count: number };
 
 export type CreateEnquiryPayload = {
   customer: { name: string; phone: string; email?: string };
@@ -133,6 +143,11 @@ export const api = {
   createEnquiry: (payload: CreateEnquiryPayload, csrfToken: string) =>
     request<ApiEnquiry>("/enquiries", { method: "POST", body: JSON.stringify(payload) }, csrfToken),
   databaseHealth: () => request<DatabaseHealth>("/health/database"),
+  listNotifications: () => request<ApiNotificationPage>("/notifications?limit=50"),
+  markNotificationRead: (notificationId: string, csrfToken: string) =>
+    request<ApiNotification>(`/notifications/${encodeURIComponent(notificationId)}/read`, { method: "PATCH", body: JSON.stringify({}) }, csrfToken),
+  markAllNotificationsRead: (csrfToken: string) =>
+    request<{ updated_count: number }>("/notifications/read-all", { method: "PATCH", body: JSON.stringify({}) }, csrfToken),
   listFollowUps: (bucket: FollowUpBucket) =>
     request<ApiPage<ApiEnquiry> & { bucket: FollowUpBucket }>(`/follow-ups?bucket=${bucket}&limit=100&offset=0`),
   completeFollowUp: (enquiryId: string, csrfToken: string) =>

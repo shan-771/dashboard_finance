@@ -42,6 +42,7 @@ react(),
         '/public': { target: process.env.VITE_BACKEND_URL || 'http://127.0.0.1:8000' },
         '/follow-ups': { target: process.env.VITE_BACKEND_URL || 'http://127.0.0.1:8000' },
         '/change-requests': { target: process.env.VITE_BACKEND_URL || 'http://127.0.0.1:8000' },
+        '/notifications': { target: process.env.VITE_BACKEND_URL || 'http://127.0.0.1:8000' },
         '/health': { target: process.env.VITE_BACKEND_URL || 'http://127.0.0.1:8000' },
       },
       watch: {

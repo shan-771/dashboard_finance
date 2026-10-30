@@ -26,57 +26,86 @@ export default function LoginPage({ onLogin, error, busy }: LoginPageProps) {
     <main className="login-shell">
       <section className="login-card">
         <div className="login-brand">
-          <span className="brand-mark">M</span>
-          <span><strong>MI FINS</strong><small>Mahi Homes &amp; Finance</small></span>
+          <div className="brand-mark">M</div>
+          <div className="brand-text">
+            <strong>MI FINS</strong>
+            <small>Mahi Homes &amp; Finance CRM</small>
+          </div>
         </div>
-        <p className="eyebrow">STAFF WORKSPACE</p>
-        <h1>Welcome back</h1>
-        <p className="login-copy">Sign in with the User ID and password provided by your Manager.</p>
-        <form onSubmit={submit}>
+
+        <div className="login-header">
+          <p className="eyebrow">STAFF WORKSPACE</p>
+          <h1>Welcome back</h1>
+          <p className="login-copy">Sign in with your staff credentials to manage enquiries and follow-ups.</p>
+        </div>
+
+        <form onSubmit={submit} className="login-form">
           {import.meta.env.DEV && (
-            <>
-              <label htmlFor="demo-account">Development demo account</label>
-              <select
-                id="demo-account"
-                value={demoAccount}
-                onChange={(event) => selectDemoAccount(event.target.value)}
-              >
-                <option value="">Choose an account</option>
-                <option value="demo.manager">Demo Manager</option>
-                <option value="demo.staff">Demo Staff</option>
-              </select>
-              <p className="demo-account-note">Local development only. Seed these accounts with <code>python -m app.cli create-demo-accounts</code>.</p>
-            </>
+            <div className="demo-accounts-box">
+              <label htmlFor="demo-account">Quick Demo Accounts</label>
+              <div className="demo-chip-group">
+                <button
+                  type="button"
+                  className={`demo-chip ${demoAccount === "demo.manager" ? "active" : ""}`}
+                  onClick={() => selectDemoAccount("demo.manager")}
+                >
+                  <span className="demo-chip-role">Manager</span>
+                  <span className="demo-chip-name">demo.manager</span>
+                </button>
+                <button
+                  type="button"
+                  className={`demo-chip ${demoAccount === "demo.staff" ? "active" : ""}`}
+                  onClick={() => selectDemoAccount("demo.staff")}
+                >
+                  <span className="demo-chip-role">Staff</span>
+                  <span className="demo-chip-name">demo.staff</span>
+                </button>
+              </div>
+              <p className="demo-account-note">Local test accounts with pre-configured access permissions.</p>
+            </div>
           )}
-          <label htmlFor="user-id">User ID</label>
-          <input
-            id="user-id"
-            name="user_id"
-            autoComplete="username"
-            autoCapitalize="none"
-            required
-            minLength={3}
-            maxLength={50}
-            value={userId}
-            onChange={(event) => setUserId(event.target.value)}
-          />
-          <label htmlFor="password">Password</label>
-          <input
-            id="password"
-            name="password"
-            type="password"
-            autoComplete="current-password"
-            required
-            maxLength={128}
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-          />
+
+          <div className="form-field">
+            <label htmlFor="user-id">User ID</label>
+            <input
+              id="user-id"
+              name="user_id"
+              autoComplete="username"
+              autoCapitalize="none"
+              placeholder="e.g. demo.manager"
+              required
+              minLength={3}
+              maxLength={50}
+              value={userId}
+              onChange={(event) => setUserId(event.target.value)}
+            />
+          </div>
+
+          <div className="form-field">
+            <label htmlFor="password">Password</label>
+            <input
+              id="password"
+              name="password"
+              type="password"
+              autoComplete="current-password"
+              placeholder="••••••••••••"
+              required
+              maxLength={128}
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+            />
+          </div>
+
           {error && <p className="login-error" role="alert">{error}</p>}
+
           <button className="primary login-submit" type="submit" disabled={busy}>
-            {busy ? "Signing in…" : "Sign in"}
+            {busy ? "Signing in…" : "Sign in to workspace"}
           </button>
         </form>
-        <p className="login-footnote">Need access? Ask your Manager to create a staff account.</p>
+
+        <p className="login-footnote">
+          Need access or password reset? Contact your Workspace Manager.
+        </p>
       </section>
     </main>
   );

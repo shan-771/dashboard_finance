@@ -17,6 +17,7 @@ from app.models import (
     ChangeRequestStatus, Customer, Enquiry, EnquiryAuditEvent, EnquiryChangeRequest,
     EnquiryStatus, FollowUp, User, UserRole, utc_now,
 )
+from app.notifications import notify_active_role, notify_users, publish_notifications
 from app.retention import DELETION_RECOVERY_WINDOW, purge_deleted_enquiry
 from app.schemas import (
     ChangeRequestDecision,
@@ -159,13 +160,24 @@ def create_public_enquiry(
     customer = Customer(**payload.customer.model_dump())
     db.add(customer)
     db.flush()
-    db.add(Enquiry(
+    enquiry = Enquiry(
         customer_id=customer.id,
         service_type=payload.service_type,
         source="Website",
         status=EnquiryStatus.NEW.value,
-    ))
+    )
+    db.add(enquiry)
+    db.flush()
+    notifications = notify_active_role(
+        db,
+        UserRole.STAFF,
+        notification_type="new_enquiry",
+        title="New enquiry received",
+        message=f"{customer.name} submitted a {payload.service_type} enquiry.",
+        enquiry_id=enquiry.id,
+    )
     db.commit()
+    publish_notifications(notifications)
     return PublicEnquiryAccepted()
 
 
@@ -305,7 +317,17 @@ def create_enquiry(
         handled_by_id=None,
     )
     db.add(enquiry)
+    db.flush()
+    notifications = notify_active_role(
+        db,
+        UserRole.STAFF,
+        notification_type="new_enquiry",
+        title="New enquiry received",
+        message=f"{customer.name} submitted a {payload.service_type} enquiry.",
+        enquiry_id=enquiry.id,
+    )
     db.commit()
+    publish_notifications(notifications)
     db.refresh(enquiry)
     # Return a stable response while the request session is still open.
     enquiry.customer = customer
@@ -452,7 +474,19 @@ def create_enquiry_change_request(
         submitted_by_user_id=auth.user.id,
     )
     db.add(request_record)
+    if payload.request_type == "delete":
+        notifications = notify_active_role(
+            db,
+            UserRole.MANAGER,
+            notification_type="deletion_request",
+            title="Deletion request to review",
+            message=f"A Staff member requested deletion of {enquiry.customer.name}'s {enquiry.service_type} enquiry.",
+            enquiry_id=enquiry.id,
+        )
+    else:
+        notifications = []
     db.commit()
+    publish_notifications(notifications)
     db.refresh(request_record)
     return request_record
 
@@ -568,7 +602,19 @@ def decide_enquiry_change_request(
             before_values=before,
             after_values=after,
         ))
+    notifications = []
+    if change_request.request_type == "delete" and change_request.submitted_by_user_id is not None:
+        decision = "approved" if payload.decision == "approve" else "rejected"
+        notifications = notify_users(
+            db,
+            [change_request.submitted_by_user_id],
+            notification_type="deletion_decision",
+            title=f"Deletion request {decision}",
+            message=f"The Manager {decision} your deletion request for {enquiry.customer.name}'s {enquiry.service_type} enquiry.",
+            enquiry_id=enquiry.id,
+        )
     db.commit()
+    publish_notifications(notifications)
     db.refresh(change_request)
     return change_request
 

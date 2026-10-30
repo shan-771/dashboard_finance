@@ -1,8 +1,11 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 from app.models import UserRole
+from app.notifications import NotificationHub
 
 
 PASSWORD = "correct horse battery staple"
@@ -20,6 +23,27 @@ def new_enquiry_payload(name: str = "Riya Shah") -> dict:
         "service_type": "Finance/Loans",
         "source": "Phone",
     }
+
+
+def test_notification_hub_pushes_events_to_connected_user() -> None:
+    async def receive_event() -> None:
+        hub = NotificationHub()
+        user_id = uuid4()
+        loop = asyncio.get_running_loop()
+        first_session: asyncio.Queue[str] = asyncio.Queue(maxsize=5)
+        second_session: asyncio.Queue[str] = asyncio.Queue(maxsize=5)
+        hub.subscribe(user_id, loop, first_session)
+        hub.subscribe(user_id, loop, second_session)
+
+        hub.publish(user_id, {"title": "New enquiry"})
+
+        first = await asyncio.wait_for(first_session.get(), timeout=1)
+        second = await asyncio.wait_for(second_session.get(), timeout=1)
+        assert first == second == '{"title":"New enquiry"}'
+        hub.unsubscribe(user_id, loop, first_session)
+        hub.unsubscribe(user_id, loop, second_session)
+
+    asyncio.run(receive_event())
 
 
 def test_enquiry_creation_and_multiple_enquiries_per_customer(client: TestClient, make_user) -> None:
@@ -77,6 +101,84 @@ def test_staff_can_view_and_create_enquiries(client: TestClient, make_user) -> N
     )
     assert created.status_code == 201
     assert client.get("/enquiries").json()["total"] == 1
+
+
+def test_notifications_follow_recipient_rules_and_can_be_marked_read(client: TestClient, make_user) -> None:
+    manager = make_user()
+    staff = make_user(email="staff@example.com", role=UserRole.STAFF)
+    other_staff = make_user(email="other.staff@example.com", role=UserRole.STAFF)
+    manager_csrf = sign_in(client, manager.user_id)
+    staff_csrf = sign_in(client, staff.user_id)
+    other_staff_csrf = sign_in(client, other_staff.user_id)
+
+    created = client.post(
+        "/enquiries",
+        headers={"X-CSRF-Token": manager_csrf},
+        json=new_enquiry_payload(),
+    )
+    assert created.status_code == 201
+    enquiry_id = created.json()["id"]
+
+    client.cookies.clear()
+    staff_csrf = sign_in(client, staff.user_id)
+    staff_notifications = client.get("/notifications").json()
+    assert staff_notifications["unread_count"] == 1
+    assert staff_notifications["items"][0]["notification_type"] == "new_enquiry"
+    assert staff_notifications["items"][0]["enquiry_id"] == enquiry_id
+
+    client.cookies.clear()
+    other_staff_csrf = sign_in(client, other_staff.user_id)
+    other_notifications = client.get("/notifications").json()
+    assert other_notifications["unread_count"] == 1
+    assert client.patch(
+        f"/notifications/{staff_notifications['items'][0]['id']}/read",
+        headers={"X-CSRF-Token": other_staff_csrf},
+        json={},
+    ).status_code == 404
+
+    client.cookies.clear()
+    manager_csrf = sign_in(client, manager.user_id)
+    assert client.get("/notifications").json()["unread_count"] == 0
+
+    client.cookies.clear()
+    staff_csrf = sign_in(client, staff.user_id)
+    request_response = client.post(
+        f"/enquiries/{enquiry_id}/change-requests",
+        headers={"X-CSRF-Token": staff_csrf},
+        json={"request_type": "delete"},
+    )
+    assert request_response.status_code == 201
+    request_id = request_response.json()["id"]
+
+    client.cookies.clear()
+    manager_csrf = sign_in(client, manager.user_id)
+    manager_notifications = client.get("/notifications").json()
+    assert manager_notifications["unread_count"] == 1
+    assert manager_notifications["items"][0]["notification_type"] == "deletion_request"
+    assert manager_notifications["items"][0]["enquiry_id"] == enquiry_id
+
+    decision = client.patch(
+        f"/change-requests/{request_id}",
+        headers={"X-CSRF-Token": manager_csrf},
+        json={"decision": "approve"},
+    )
+    assert decision.status_code == 200
+
+    client.cookies.clear()
+    staff_csrf = sign_in(client, staff.user_id)
+    decision_notifications = client.get("/notifications").json()
+    assert decision_notifications["unread_count"] == 2
+    assert decision_notifications["items"][0]["notification_type"] == "deletion_decision"
+    assert decision_notifications["items"][0]["title"] == "Deletion request approved"
+
+    read_all = client.patch(
+        "/notifications/read-all",
+        headers={"X-CSRF-Token": staff_csrf},
+        json={},
+    )
+    assert read_all.status_code == 200
+    assert read_all.json()["updated_count"] == 2
+    assert client.get("/notifications").json()["unread_count"] == 0
 
 
 def test_staff_first_claim_wins_and_other_staff_gets_taken_notice(client: TestClient, make_user) -> None:

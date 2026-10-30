@@ -110,6 +110,17 @@ These routes require a staff session; writes also require the CSRF header. Compl
 
 These endpoints require a staff session; writes also require the CSRF header. Staff cannot review requests, and a requester cannot approve their own request.
 
+## In-app notifications
+
+- New manual and website enquiries create an unread notification for each active Staff account.
+- Deletion requests create an unread notification for each active Manager. The requester receives an unread notification when the Manager approves or rejects the request.
+- `GET /notifications?limit=30` returns the signed-in user's newest notifications and total unread count.
+- `GET /notifications/stream` sends committed notifications to the signed-in user's open dashboard immediately using Server-Sent Events; it does not hold a database connection open for the stream.
+- `PATCH /notifications/{id}/read` marks one of the signed-in user's notifications as read; `PATCH /notifications/read-all` marks all of that user's unread notifications as read. Both writes require the CSRF header.
+- The dashboard uses the live stream while connected and refreshes every 15 seconds as a recovery fallback. Notifications are stored in PostgreSQL and are removed when their enquiry is permanently purged.
+
+The next Alembic migration creates the notification table. Docker Compose applies it automatically at backend startup; for host-based development, run `alembic upgrade head` from `backend` before starting the API.
+
 Website intake creates a separate customer record without trying to infer identity from name, email, or phone. Staff can explicitly link that record to an existing customer after review. The initial public intake throttle is in-memory and per application process; production deployments with multiple workers should add a shared rate-limit store or edge rate limiting.
 
 The client-facing roles are `manager` and `staff`. A Manager provisions Staff accounts; there is no public registration endpoint. Developer database access and schema changes are not exposed through the client API.

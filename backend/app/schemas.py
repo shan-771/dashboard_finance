@@ -357,3 +357,24 @@ class EnquiryPurgeResponse(BaseModel):
     enquiry_id: UUID
     customer_deleted: bool
     permanently_deleted: bool = True
+
+
+class NotificationResponse(BaseModel):
+    id: UUID
+    notification_type: str
+    title: str
+    message: str
+    enquiry_id: UUID
+    created_at: datetime
+    read_at: datetime | None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class NotificationPage(BaseModel):
+    items: list[NotificationResponse]
+    unread_count: int
+
+
+class NotificationsMarkedRead(BaseModel):
+    updated_count: int

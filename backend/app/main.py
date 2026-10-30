@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from app.api.auth import router as auth_router
 from app.api.crm import router as crm_router
 from app.api.health import router as health_router
+from app.api.notifications import router as notifications_router
 from app.api.users import router as users_router
 from app.core.config import get_settings
 from app.db import DatabaseNotConfiguredError
@@ -60,3 +61,4 @@ app.include_router(health_router)
 app.include_router(auth_router)
 app.include_router(users_router)
 app.include_router(crm_router)
+app.include_router(notifications_router)
